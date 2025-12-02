@@ -1,0 +1,26 @@
+# QQQuest - Quest 設備同步管理系統
+# 相依套件清單
+
+# 核心框架
+streamlit>=1.28.0
+
+# ADB 控制
+adb-shell>=0.4.4
+
+# 資料處理
+pydantic>=2.0.0
+
+# 資料儲存
+tinydb>=4.8.0
+
+# 日誌
+loguru>=0.7.0
+
+# UI 組件
+streamlit-autorefresh>=0.0.1
+
+# 圖像處理
+pillow>=10.0.0
+
+# 其他工具
+python-dotenv>=1.0.0
