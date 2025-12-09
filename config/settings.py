@@ -68,6 +68,21 @@ SYNC_INTERVAL = 30  # 時間同步間隔（秒）
 SYNC_SAMPLES = 10  # 同步採樣次數
 SYNC_PRECISION_MS = 50  # 同步精度要求（毫秒）
 
+# 網路監控設定
+NETWORK_MONITORING_CONFIG: Dict[str, Any] = {
+    "enabled": True,              # 是否啟用網路監控
+    "ping_interval": 10,          # Ping 間隔（秒）
+    "ping_timeout": 2,            # Ping 超時（秒）
+    "auto_connect": True,         # 是否啟用自動連接
+    "auto_connect_max_retries": 3,  # 自動連接最大重試次數
+    "auto_connect_cooldown": 30,    # 失敗後冷卻時間（秒）
+    "ping_targets": {              # Ping 目標配置
+        "all_devices": False,        # Ping 所有設備
+        "only_not_connected": True,  # 僅 Ping 未連接設備
+        "only_wifi_devices": True,   # 僅 Ping WiFi 設備
+    }
+}
+
 # UI 設定
 UI_REFRESH_INTERVAL = 3  # UI 自動刷新間隔（秒）
 CARD_WIDTH = 200  # 設備卡片寬度（像素）
@@ -114,6 +129,7 @@ def get_user_config() -> Dict[str, Any]:
     default_config = {
         "scrcpy": SCRCPY_CONFIG.copy(),
         "screenshot": SCREENSHOT_CONFIG.copy(),
+        "network_monitoring": NETWORK_MONITORING_CONFIG.copy(),
     }
     
     if USER_CONFIG_DB.exists():

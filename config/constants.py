@@ -9,6 +9,7 @@ class DeviceStatus(str, Enum):
     ONLINE = "online"  # 在線（在 adb devices 列表中，狀態為 device）
     OFFLINE = "offline"  # 離線（在 adb devices 列表中，狀態為 offline）
     NOT_CONNECTED = "not_connected"  # 未連接（不在 adb devices 列表中）
+    ADB_NOT_ENABLED = "adb_not_enabled"  # WiFi ADB 未開啟（Ping 通但無法連接）
     BUSY = "busy"  # 忙碌中
     CONNECTING = "connecting"  # 連接中
     ERROR = "error"  # 錯誤
@@ -75,6 +76,7 @@ STATUS_ICONS = {
     DeviceStatus.ONLINE: "🟢",
     DeviceStatus.OFFLINE: "🟠",  # 橙色表示在列表中但狀態為 offline
     DeviceStatus.NOT_CONNECTED: "⚫",  # 黑色表示未連接
+    DeviceStatus.ADB_NOT_ENABLED: "🟡",  # 黃色表示需要手動開啟 WiFi ADB
     DeviceStatus.BUSY: "🟡",
     DeviceStatus.CONNECTING: "🔵",
     DeviceStatus.ERROR: "⚠️",

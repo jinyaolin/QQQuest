@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     STOP_APP = "stop_app"         # 關閉程式
     RESTART_APP = "restart_app"   # 重啟應用
     SEND_KEY = "send_key"         # 發送按鍵
+    INSTALL_APK = "install_apk"   # 安裝 APK
 
 
 # 動作類型中文名稱映射
@@ -28,6 +29,7 @@ ACTION_TYPE_NAMES = {
     ActionType.STOP_APP: "關閉程式",
     ActionType.RESTART_APP: "重啟應用",
     ActionType.SEND_KEY: "發送按鍵",
+    ActionType.INSTALL_APK: "安裝 APK",
 }
 
 # 動作類型圖標映射
@@ -39,6 +41,7 @@ ACTION_TYPE_ICONS = {
     ActionType.STOP_APP: "🛑",
     ActionType.RESTART_APP: "🔄",
     ActionType.SEND_KEY: "⌨️",
+    ActionType.INSTALL_APK: "📦",
 }
 
 
@@ -199,6 +202,26 @@ class ActionParamsValidator:
         
         return True, ""
     
+    @staticmethod
+    def validate_install_apk(params: Dict[str, Any]) -> tuple[bool, str]:
+        """驗證安裝 APK 參數"""
+        if not params.get('apk_path'):
+            return False, "apk_path 參數為必填"
+        
+        # 驗證文件是否存在
+        from pathlib import Path
+        apk_path = Path(params['apk_path'])
+        if not apk_path.exists():
+            return False, f"APK 文件不存在: {apk_path}"
+        
+        if not apk_path.is_file():
+            return False, f"路徑不是文件: {apk_path}"
+        
+        if not apk_path.suffix.lower() == '.apk':
+            return False, f"文件不是 APK 格式: {apk_path}"
+        
+        return True, ""
+    
     @classmethod
     def validate(cls, action_type: ActionType, params: Dict[str, Any]) -> tuple[bool, str]:
         """根據動作類型驗證參數"""
@@ -210,6 +233,7 @@ class ActionParamsValidator:
             ActionType.STOP_APP: cls.validate_stop_app,
             ActionType.RESTART_APP: cls.validate_restart_app,
             ActionType.SEND_KEY: cls.validate_send_key,
+            ActionType.INSTALL_APK: cls.validate_install_apk,
         }
         
         validator = validators.get(action_type)

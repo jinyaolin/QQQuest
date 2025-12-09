@@ -9,8 +9,10 @@ import time
 import uuid
 from core.device import Device
 from core.action_registry import ActionRegistry
-from config.constants import DeviceStatus, STATUS_ICONS, CONNECTION_ICONS
-from config.settings import UI_REFRESH_INTERVAL, ADB_DEFAULT_PORT
+from core.auto_connect_manager import AutoConnectManager
+from core.ping_service import PingService
+from config.constants import DeviceStatus, STATUS_ICONS, CONNECTION_ICONS, ConnectionType
+from config.settings import UI_REFRESH_INTERVAL, ADB_DEFAULT_PORT, get_user_config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -136,12 +138,10 @@ dialog_states = {key: st.session_state.get(key, False) for key in dialog_keys}
 has_dialog_open = any(dialog_states.values())
 
 # 只在沒有對話框時自動刷新
-# 使用 try-except 避免組件錯誤影響頁面
 if not has_dialog_open:
     try:
-        count = st_autorefresh(interval=UI_REFRESH_INTERVAL * 1000, key="device_refresh", debounce=False)
-    except Exception as e:
-        # 靜默處理自動刷新錯誤，不影響頁面顯示
+        st_autorefresh(interval=UI_REFRESH_INTERVAL * 1000, key="device_refresh", debounce=False)
+    except Exception:
         pass
 
 # 初始化系統
@@ -576,6 +576,8 @@ def render_device_card(device: Device):
                         st.caption("（設備離線）")
                     elif device.status == DeviceStatus.NOT_CONNECTED:
                         st.caption("（設備未連接）")
+                    elif device.status == DeviceStatus.ADB_NOT_ENABLED:
+                        st.caption("（無法連線 - WiFi ADB 未開啟）")
                     else:
                         st.caption(f"（設備狀態：{device.status}）")
                 
@@ -615,9 +617,10 @@ def render_device_card(device: Device):
                             st.error(f"❌ 中斷連線失敗：{output}")
                             logger.error(f"❌ 中斷連線失敗: {device.display_name} - {output}")
                 
-                # 重新連線（僅未連接設備）
-                if device.status == DeviceStatus.NOT_CONNECTED:
-                    if st.button("🔌 重新連線", key=f"reconnect_{device.device_id}", use_container_width=True):
+                # 重新連線（僅未連接設備或無法連線設備）
+                if device.status == DeviceStatus.NOT_CONNECTED or device.status == DeviceStatus.ADB_NOT_ENABLED:
+                    button_text = "🔌 重新連線" if device.status == DeviceStatus.NOT_CONNECTED else "🔧 嘗試連接"
+                    if st.button(button_text, key=f"reconnect_{device.device_id}", use_container_width=True):
                         if device.ip:
                             logger.info(f"🔄 嘗試重新連線: {device.display_name} ({device.ip}:{device.port})")
                             success, output = st.session_state.adb_manager.connect(device.ip, device.port)
@@ -627,6 +630,12 @@ def render_device_card(device: Device):
                                 st.success(f"✅ 已重新連線：{device.ip}:{device.port}")
                                 # 連接成功後，狀態會在下次掃描時自動更新為 ONLINE 或 OFFLINE
                                 device.last_seen = datetime.now()
+                                
+                                # 重置自動連接重試次數
+                                if 'auto_connect_manager' in st.session_state:
+                                    st.session_state.auto_connect_manager.reset_retry_count(device.device_id)
+                                    logger.debug(f"重置設備 {device.display_name} 的自動連接重試次數（手動連接成功）")
+                                
                                 st.session_state.device_registry.save_device(device)
                                 logger.info(f"✅ 設備 {device.display_name} 重新連線成功")
                                 time.sleep(0.5)
@@ -639,16 +648,11 @@ def render_device_card(device: Device):
                             logger.warning(f"⚠️ 設備 {device.display_name} 沒有 IP 地址")
                 
                 if st.button("⚙️ 編輯設定", key=f"edit_{device.device_id}", use_container_width=True):
-                    logger.info(f"⚙️ [按鈕點擊] 編輯設備按鈕被點擊: {device.device_id}")
                     st.session_state[f'edit_device_{device.device_id}'] = True
-                    logger.info(f"✅ [標記設置] edit_device_{device.device_id} = True")
                     st.rerun()
                 
                 if st.button("🗑️ 移除設備", key=f"remove_{device.device_id}", use_container_width=True, type="secondary"):
-                    # 立即設置標記，確保在這次渲染時就被識別
-                    logger.info(f"🗑️ [按鈕點擊] 移除設備按鈕被點擊: {device.device_id}")
                     st.session_state[f'confirm_remove_{device.device_id}'] = True
-                    logger.info(f"✅ [標記設置] confirm_remove_{device.device_id} = True")
                     st.rerun()
         
         # 設備資訊
@@ -673,6 +677,10 @@ def render_device_card(device: Device):
             if device.temperature > 0:
                 temp_color = "🟢" if device.temperature < 35 else "🟡" if device.temperature < 40 else "🔴"
                 st.markdown(f"{temp_color} 溫度：{device.temperature:.1f}°C")
+            elif device.ping_ms is not None:
+                # 顯示 Ping 時間
+                ping_color = "🟢" if device.ping_ms < 50 else "🟡" if device.ping_ms < 100 else "🔴"
+                st.markdown(f"{ping_color} Ping：{device.ping_ms:.0f}ms")
         
         # 狀態列 2：運作狀態和最後在線
         col1, col2 = st.columns(2)
@@ -690,6 +698,10 @@ def render_device_card(device: Device):
             elif device.status == DeviceStatus.NOT_CONNECTED:
                 # 未連接狀態：不在 ADB 列表中
                 st.markdown("⚫ 未連接")
+            elif device.status == DeviceStatus.ADB_NOT_ENABLED:
+                # WiFi ADB 未開啟
+                st.markdown("🟡 無法連線")
+                st.caption("需要手動開啟 WiFi ADB")
             else:
                 # 其他狀態
                 st.markdown(f"❓ {device.status}")
@@ -704,7 +716,6 @@ def render_device_card(device: Device):
                 else:
                     st.markdown(f"🔴 {time_diff.seconds // 3600} 時前")
         
-        # 開機時間（如果有）
         if uptime > 0 and device.is_online:
             hours = uptime // 3600
             minutes = (uptime % 3600) // 60
@@ -763,7 +774,6 @@ def main():
                 st.session_state.device_registry.save_device(device)
                 st.session_state.device_registry.save_device(prev_device)
                 
-                # 重新排序資料庫，確保 JSON 文件按照順序排列
                 st.session_state.device_registry.reorder_devices()
                 
                 logger.info(f"✅ 移動成功: {device.display_name} (新 sort_order: {device.sort_order})")
@@ -790,7 +800,6 @@ def main():
                 st.session_state.device_registry.save_device(device)
                 st.session_state.device_registry.save_device(next_device)
                 
-                # 重新排序資料庫，確保 JSON 文件按照順序排列
                 st.session_state.device_registry.reorder_devices()
                 
                 logger.info(f"✅ 移動成功: {device.display_name} (新 sort_order: {device.sort_order})")
@@ -802,16 +811,31 @@ def main():
             if moved:
                 st.rerun()
     
-    # 自動同步設備在線狀態（檢查 adb devices）
-    if devices:
-        adb_devices = st.session_state.adb_manager.get_devices()
-        # 創建 serial -> state 的映射
-        adb_device_map = {d['serial']: d['state'] for d in adb_devices}
-        logger.debug(f"🔍 ADB 設備列表: {list(adb_device_map.keys())}")
-        
-        # 同步狀態並批量獲取設備詳細資訊
-        devices_to_update = []  # 收集需要更新狀態的設備
-        devices_to_save = set()  # 收集需要保存的設備（使用 set 去重）
+        # 自動同步設備在線狀態
+        if devices:
+            adb_devices = st.session_state.adb_manager.get_devices()
+            adb_device_map = {d['serial']: d['state'] for d in adb_devices}
+            logger.debug(f"🔍 ADB 設備列表: {list(adb_device_map.keys())}")
+            
+            # 同步狀態並批量獲取設備詳細資訊
+            devices_to_update = []  # 收集需要更新狀態的設備
+            devices_to_save = set()  # 收集需要保存的設備（使用 set 去重）
+            st.session_state.devices_for_network_check = []  # 收集需要網路監控檢查的設備
+            
+            # 首先檢查並應用之前已完成的 Ping 結果（不阻塞）
+            if 'ping_service' in st.session_state:
+                ping_service = st.session_state.ping_service
+                if 'auto_connect_manager' in st.session_state:
+                    retry_manager = st.session_state.auto_connect_manager
+                else:
+                    retry_manager = None
+                
+                # 非阻塞檢查並應用結果
+                ping_updated_devices = ping_service.check_and_apply_results(devices, retry_manager)
+                if ping_updated_devices:
+                    logger.debug(f"📡 應用 {len(ping_updated_devices)} 台設備的 Ping 結果")
+                    for device in ping_updated_devices:
+                        devices_to_save.add(device.device_id)
         
         for device in devices:
             # 構建可能的連接字串
@@ -838,6 +862,11 @@ def main():
                     device.status = DeviceStatus.ONLINE
                     device.last_seen = datetime.now()
                     devices_to_save.add(device.device_id)
+                    
+                    # 設備重新上線，重置自動連接重試次數
+                    if 'auto_connect_manager' in st.session_state:
+                        st.session_state.auto_connect_manager.reset_retry_count(device.device_id)
+                        logger.debug(f"重置設備 {device.display_name} 的自動連接重試次數")
             elif adb_state == "offline":
                 # 在列表中但狀態為 offline → OFFLINE
                 new_status = DeviceStatus.OFFLINE
@@ -846,16 +875,20 @@ def main():
                     device.status = DeviceStatus.OFFLINE
                     devices_to_save.add(device.device_id)
             else:
-                # 不在列表中 → NOT_CONNECTED
+                # 不在列表中 → 需要檢查網路監控
                 new_status = DeviceStatus.NOT_CONNECTED
                 if device.status != DeviceStatus.NOT_CONNECTED:
                     logger.info(f"⚫ 自動標記為未連接: {device.display_name} (不在 ADB 列表中)")
                     device.status = DeviceStatus.NOT_CONNECTED
                     devices_to_save.add(device.device_id)
             
-            # 如果設備在線（狀態為 device），檢查是否需要更新詳細狀態
+            # 收集需要網路監控檢查的設備
+            if device.status == DeviceStatus.NOT_CONNECTED or device.status == DeviceStatus.ADB_NOT_ENABLED:
+                devices_for_network_check = getattr(st.session_state, 'devices_for_network_check', [])
+                devices_for_network_check.append(device)
+                st.session_state.devices_for_network_check = devices_for_network_check
+            
             if device.status == DeviceStatus.ONLINE:
-                # 檢查上次更新時間，避免過於頻繁的查詢
                 should_update = True
                 if 'device_status_last_fetch' not in st.session_state:
                     st.session_state.device_status_last_fetch = {}
@@ -863,20 +896,13 @@ def main():
                 last_fetch = st.session_state.device_status_last_fetch.get(device.device_id)
                 if last_fetch:
                     time_since_fetch = (datetime.now() - last_fetch).total_seconds()
-                    # 如果上次查詢在 10 秒內，跳過（避免頻繁查詢）
                     should_update = time_since_fetch > 10
                 
                 if should_update:
                     devices_to_update.append(device)
         
-        # 🚀 並發批量獲取所有在線設備的狀態（大幅提升性能）
         if devices_to_update:
-            logger.debug(f"🚀 並發查詢 {len(devices_to_update)} 台設備狀態")
-            
-            # 準備設備列表
             device_list = [device.connection_string for device in devices_to_update]
-            
-            # 並發查詢所有設備狀態
             status_dict = st.session_state.adb_manager.get_status_batch(device_list)
             
             # 更新每個設備的狀態
@@ -896,7 +922,6 @@ def main():
                             device.is_charging = device_status['is_charging']
                             devices_to_save.add(device.device_id)  # 記錄需要保存的設備
                             
-                            # 緩存額外狀態到 session_state（不保存到資料庫）
                             if 'device_extra_status' not in st.session_state:
                                 st.session_state.device_extra_status = {}
                             
@@ -907,54 +932,98 @@ def main():
                                 'last_update': datetime.now()
                             }
                             
-                            logger.debug(f"📊 {device.display_name}: 🔋{device.battery}% 🌡️{device.temperature}°C "
-                                       f"{'⚡充電中' if device.is_charging else ''} "
-                                       f"{'😴休眠' if not device_status['is_awake'] else '👁️清醒'}")
-                            
-                            # 清除錯誤標記
                             if st.session_state.get(f'device_status_error_{device.device_id}'):
                                 st.session_state[f'device_status_error_{device.device_id}'] = False
                     except Exception as e:
-                        # 只在首次失敗時記錄警告，避免日誌泛濫
                         if not st.session_state.get(f'device_status_error_{device.device_id}'):
                             logger.warning(f"⚠️ 更新設備狀態失敗: {device.display_name} - {e}")
                             st.session_state[f'device_status_error_{device.device_id}'] = True
-                        else:
-                            logger.debug(f"⚠️ 更新設備狀態失敗（跳過日誌）: {device.display_name}")
-                
         
-        # 🔧 統一保存所有狀態改變的設備（包括在線/離線狀態、電量等）
+        # 網路監控和自動連接檢查
+        devices_for_network_check = getattr(st.session_state, 'devices_for_network_check', [])
+        if devices_for_network_check:
+            user_config = get_user_config()
+            network_config = user_config.get('network_monitoring', {})
+            
+            if network_config.get('enabled', True):
+                # 過濾需要 Ping 的設備
+                ping_targets = network_config.get('ping_targets', {})
+                devices_to_ping = []
+                
+                for device in devices_for_network_check:
+                    should_ping = False
+                    
+                    if device.status == DeviceStatus.NOT_CONNECTED or device.status == DeviceStatus.ADB_NOT_ENABLED:
+                        should_ping = ping_targets.get('only_not_connected', True)
+                    elif ping_targets.get('all_devices', False):
+                        should_ping = True
+                    
+                    if should_ping and device.connection_type == ConnectionType.WIFI and device.ip:
+                        # 檢查上次 Ping 時間
+                        ping_last_check_key = f'ping_last_check_{device.device_id}'
+                        ping_interval = network_config.get('ping_interval', 10)
+                        
+                        last_check = st.session_state.get(ping_last_check_key)
+                        if last_check:
+                            time_since = (datetime.now() - last_check).total_seconds()
+                            if time_since < ping_interval:
+                                continue
+                        
+                        devices_to_ping.append(device)
+                
+                if devices_to_ping:
+                    # 初始化重試管理器和 Ping 服務
+                    if 'auto_connect_manager' not in st.session_state:
+                        st.session_state.auto_connect_manager = AutoConnectManager(st.session_state)
+                    
+                    if 'ping_service' not in st.session_state:
+                        st.session_state.ping_service = PingService(
+                            st.session_state,
+                            st.session_state.adb_manager
+                        )
+                    
+                    retry_manager = st.session_state.auto_connect_manager
+                    ping_service = st.session_state.ping_service
+                    
+                    # 提交 Ping 任務到後台執行（非阻塞）
+                    ping_service.submit_ping_tasks(devices_to_ping, network_config, retry_manager)
+                    logger.debug(f"📡 已提交 {len(devices_to_ping)} 台設備的 Ping 任務（後台執行）")
+                    
+                    # 檢查並應用已完成的 Ping 結果（非阻塞檢查）
+                    updated_devices = ping_service.check_and_apply_results(devices_to_ping, retry_manager)
+                    for device in updated_devices:
+                        devices_to_save.add(device.device_id)
+                    
+                    # 清理過期的結果
+                    ping_service.cleanup_old_results(max_age_seconds=60)
+                
+                # 清除收集的設備列表
+                st.session_state.devices_for_network_check = []
+        
         if devices_to_save:
-            logger.info(f"💾 保存 {len(devices_to_save)} 台設備的狀態變更")
-            # 建立 device_id 到 device 的映射
             device_map = {d.device_id: d for d in devices}
-            # 保存所有需要保存的設備
             for device_id in devices_to_save:
                 device = device_map.get(device_id)
                 if device:
                     st.session_state.device_registry.save_device(device)
             
-            # 重新讀取設備列表以確保 UI 顯示最新狀態
             devices = st.session_state.device_registry.get_all_devices()
     
     # 處理編輯設備對話框
     for device in devices:
         if st.session_state.get(f'edit_device_{device.device_id}', False):
-            logger.info(f"⚙️ [對話框] 編輯設備對話框已開啟: {device.device_id}")
             edit_device_dialog(device)
             st.stop()
     
     # 處理執行動作對話框
     for device in devices:
         if st.session_state.get(f'execute_action_on_{device.device_id}', False):
-            logger.info(f"⚡ [對話框] 執行動作對話框已開啟: {device.device_id}")
             execute_action_dialog(device)
             st.stop()
     
     # 處理移除設備對話框
     for device in devices:
         if st.session_state.get(f'confirm_remove_{device.device_id}', False):
-            logger.info(f"💬 [對話框] 確認移除對話框已開啟: {device.device_id}")
             confirm_remove_device(device)
             st.stop()
     

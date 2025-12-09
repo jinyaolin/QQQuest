@@ -3,13 +3,56 @@
 """
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from typing import Optional
+from typing import Optional, List, Tuple
 import time
+from pathlib import Path
+from datetime import datetime
 from core.action import Action, ActionType, ACTION_TYPE_NAMES, ACTION_TYPE_ICONS, COMMON_KEYCODES, ActionParamsValidator
 from core.action_registry import ActionRegistry
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def get_apks_directory() -> Path:
+    """獲取 APKs 目錄路徑（相對於 Streamlit 應用根目錄）"""
+    # 獲取當前文件的目錄（pages/），然後回到上一級（項目根目錄）
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent
+    apks_dir = project_root / "apks"
+    return apks_dir
+
+
+def scan_apks_directory() -> List[Tuple[str, str, datetime]]:
+    """
+    掃描 apks 目錄，返回所有 APK 文件列表
+    
+    Returns:
+        List of (file_path, file_name, created_time) tuples
+    """
+    apks_dir = get_apks_directory()
+    
+    # 如果目錄不存在，創建它
+    if not apks_dir.exists():
+        apks_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"創建 APKs 目錄: {apks_dir}")
+        return []
+    
+    apk_files = []
+    for file_path in apks_dir.glob("*.apk"):
+        if file_path.is_file():
+            # 獲取文件創建時間
+            created_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+            apk_files.append((
+                str(file_path),
+                file_path.name,
+                created_time
+            ))
+    
+    # 按創建時間排序（最新的在前）
+    apk_files.sort(key=lambda x: x[2], reverse=True)
+    
+    return apk_files
 
 # 頁面配置
 st.set_page_config(
@@ -251,6 +294,55 @@ def add_action_dialog():
             key="sendkey_repeat"
         )
     
+    elif selected_type == ActionType.INSTALL_APK:
+        st.info("📦 安裝 APK")
+        
+        # 掃描 apks 目錄
+        apk_files = scan_apks_directory()
+        
+        if not apk_files:
+            st.warning("⚠️ apks 目錄中沒有找到 APK 文件")
+            st.caption(f"請將 APK 文件放到以下目錄：{get_apks_directory()}")
+            params['apk_path'] = ""
+        else:
+            # 創建選項列表（顯示文件名和創建時間）
+            apk_options = []
+            apk_paths = {}
+            
+            for file_path, file_name, created_time in apk_files:
+                # 格式化時間
+                time_str = created_time.strftime("%Y-%m-%d %H:%M:%S")
+                display_name = f"{file_name} ({time_str})"
+                apk_options.append(display_name)
+                apk_paths[display_name] = file_path
+            
+            selected_display = st.selectbox(
+                "選擇 APK 文件 *",
+                options=apk_options,
+                help="選擇要安裝的 APK 文件（顯示創建時間以便區分）",
+                key="install_apk_select"
+            )
+            
+            if selected_display:
+                params['apk_path'] = apk_paths[selected_display]
+                st.caption(f"📁 路徑：{params['apk_path']}")
+            else:
+                params['apk_path'] = ""
+        
+        params['replace'] = st.checkbox(
+            "替換已存在的應用",
+            value=True,
+            help="如果應用已安裝，是否替換安裝",
+            key="install_replace"
+        )
+        
+        params['grant_permissions'] = st.checkbox(
+            "自動授予權限",
+            value=False,
+            help="安裝時自動授予所有權限",
+            key="install_grant_permissions"
+        )
+    
     st.markdown("---")
     
     # 按鈕（不在 form 裡）
@@ -422,6 +514,61 @@ def edit_action_dialog(action: Action):
                 min_value=1,
                 max_value=10,
                 value=params.get('repeat', 1)
+            )
+        
+        elif action.action_type == ActionType.INSTALL_APK:
+            # 掃描 apks 目錄
+            apk_files = scan_apks_directory()
+            
+            if not apk_files:
+                st.warning("⚠️ apks 目錄中沒有找到 APK 文件")
+                st.caption(f"請將 APK 文件放到以下目錄：{get_apks_directory()}")
+                params['apk_path'] = params.get('apk_path', '')
+            else:
+                # 創建選項列表（顯示文件名和創建時間）
+                apk_options = []
+                apk_paths = {}
+                
+                for file_path, file_name, created_time in apk_files:
+                    # 格式化時間
+                    time_str = created_time.strftime("%Y-%m-%d %H:%M:%S")
+                    display_name = f"{file_name} ({time_str})"
+                    apk_options.append(display_name)
+                    apk_paths[display_name] = file_path
+                
+                # 找到當前選擇的 APK（如果存在）
+                current_apk_path = params.get('apk_path', '')
+                current_index = 0
+                if current_apk_path:
+                    # 嘗試找到匹配的路徑
+                    for i, (file_path, _, _) in enumerate(apk_files):
+                        if file_path == current_apk_path or str(file_path) == current_apk_path:
+                            current_index = i
+                            break
+                
+                selected_display = st.selectbox(
+                    "選擇 APK 文件 *",
+                    options=apk_options,
+                    index=current_index if current_index < len(apk_options) else 0,
+                    help="選擇要安裝的 APK 文件（顯示創建時間以便區分）"
+                )
+                
+                if selected_display:
+                    params['apk_path'] = apk_paths[selected_display]
+                    st.caption(f"📁 路徑：{params['apk_path']}")
+                else:
+                    params['apk_path'] = ""
+            
+            params['replace'] = st.checkbox(
+                "替換已存在的應用",
+                value=params.get('replace', True),
+                help="如果應用已安裝，是否替換安裝"
+            )
+            
+            params['grant_permissions'] = st.checkbox(
+                "自動授予權限",
+                value=params.get('grant_permissions', False),
+                help="安裝時自動授予所有權限"
             )
         
         st.markdown("---")

@@ -3,6 +3,7 @@ ADB 管理器
 """
 import subprocess
 import re
+import platform
 from typing import List, Optional, Dict, Tuple, Any, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.logger import get_logger
@@ -334,8 +335,6 @@ class ADBManager:
         }
         
         try:
-            # 用一個命令執行多個查詢，用分隔符分開
-            # 注意：Quest 設備可能響應較慢，需要更長的超時時間
             command = """dumpsys battery | grep -E 'level:|temperature:|powered:' && echo '---POWER---' && dumpsys power | grep -E 'Display Power|mWakefulness=' && echo '---UPTIME---' && cat /proc/uptime | cut -d' ' -f1"""
             
             success, output = self.execute_shell_command(command, device, timeout=15)
@@ -380,7 +379,6 @@ class ADBManager:
                 
                 # 開機時間
                 elif line.strip() and not line.startswith('---'):
-                    # 檢查是否是 uptime（純數字或小數）
                     try:
                         uptime = float(line.strip().split()[0])
                         status['uptime'] = int(uptime)
@@ -453,7 +451,6 @@ class ADBManager:
             (成功, 訊息)
         """
         try:
-            # 檢查 scrcpy 是否安裝
             if not self.check_scrcpy_available():
                 return False, "scrcpy 未安裝，請先安裝 scrcpy"
             
@@ -616,7 +613,6 @@ class ADBManager:
             # 處理 Windows 換行符問題
             img_bytes = result.stdout.replace(b'\r\n', b'\n')
             
-            # 如果需要調整大小
             if max_width or max_height:
                 try:
                     from PIL import Image
@@ -875,30 +871,23 @@ class ADBManager:
             stop_existing = params.get('stop_existing', False)
             wait = params.get('wait', True)
             
-            # 如果需要，先關閉已運行的實例
             if stop_existing:
                 self.execute_shell_command(f"am force-stop {package}", device)
                 logger.info(f"已關閉已運行的實例: {package}")
             
-            # 構建啟動命令
             if activity:
-                # 有指定 Activity
                 cmd = f"am start -n {package}/{activity}"
             else:
-                # 沒有指定 Activity，使用 monkey 啟動默認 Activity
                 cmd = f"monkey -p {package} 1"
             
-            # 如果需要等待
             if wait and activity:
                 cmd += " -W"
             
-            # 執行啟動命令
             success, output = self.execute_shell_command(cmd, device)
             
             if not success:
                 return False, f"啟動失敗: {output}"
             
-            # 檢查輸出中的錯誤
             if "Error" in output or "error" in output.lower():
                 logger.error(f"❌ 啟動應用失敗: {package} - {output}")
                 return False, f"啟動失敗: {output}"
@@ -1063,6 +1052,74 @@ class ADBManager:
             logger.error(f"❌ 發送按鍵失敗: {e}")
             return False, f"發送失敗: {str(e)}"
     
+    def execute_install_apk(self, device: str, params: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        執行安裝 APK 動作
+        
+        Args:
+            device: 設備序列號或 IP:Port
+            params: 參數
+                - apk_path: APK 文件路徑（必填）
+                - replace: 是否替換已存在的應用（預設 True）
+                - grant_permissions: 是否自動授予權限（預設 False）
+        
+        Returns:
+            (成功, 訊息)
+        """
+        try:
+            from pathlib import Path
+            
+            apk_path = params.get('apk_path')
+            if not apk_path:
+                return False, "缺少 apk_path 參數"
+            
+            # 驗證文件存在
+            apk_file = Path(apk_path)
+            if not apk_file.exists():
+                return False, f"APK 文件不存在: {apk_path}"
+            
+            if not apk_file.is_file():
+                return False, f"路徑不是文件: {apk_path}"
+            
+            replace = params.get('replace', True)
+            grant_permissions = params.get('grant_permissions', False)
+            
+            # 構建安裝命令
+            cmd = ['adb', '-s', device, 'install']
+            
+            if replace:
+                cmd.append('-r')  # 替換已存在的應用
+            
+            if grant_permissions:
+                cmd.append('-g')  # 自動授予權限
+            
+            cmd.append(str(apk_file.absolute()))
+            
+            logger.info(f"正在安裝 APK: {apk_file.name} -> {device}")
+            logger.debug(f"執行命令: {' '.join(cmd)}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120  # 安裝可能需要較長時間
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"✅ 安裝 APK 成功: {apk_file.name} -> {device}")
+                return True, f"APK 安裝成功: {apk_file.name}"
+            else:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                logger.error(f"❌ 安裝 APK 失敗: {apk_file.name} -> {device}: {error_msg}")
+                return False, f"安裝失敗: {error_msg}"
+        
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ 安裝 APK 超時: {apk_path}")
+            return False, "安裝超時（超過 120 秒）"
+        except Exception as e:
+            logger.error(f"❌ 安裝 APK 失敗: {e}")
+            return False, f"安裝失敗: {str(e)}"
+    
     def execute_action(self, device: str, action) -> Tuple[bool, str]:
         """
         執行動作（通用方法）
@@ -1094,6 +1151,8 @@ class ADBManager:
                 return self.execute_restart_app(device, action.params)
             elif action.action_type == ActionType.SEND_KEY:
                 return self.execute_send_key(device, action.params)
+            elif action.action_type == ActionType.INSTALL_APK:
+                return self.execute_install_apk(device, action.params)
             else:
                 return False, f"不支援的動作類型: {action.action_type}"
         
@@ -1297,4 +1356,181 @@ class ADBManager:
         except Exception as e:
             logger.error(f"❌ 並發啟動失敗: {e}")
             return results
+    
+    # ==================== 網路監控方法 ====================
+    
+    def ping_device(self, ip: str, timeout: int = 2) -> Optional[float]:
+        """
+        Ping 設備並返回響應時間（毫秒）
+        
+        Args:
+            ip: 設備 IP 地址
+            timeout: 超時時間（秒）
+        
+        Returns:
+            None: Ping 失敗或超時
+            float: Ping 響應時間（毫秒）
+        """
+        try:
+            is_windows = platform.system() == "Windows"
+            
+            if is_windows:
+                cmd = ['ping', '-n', '1', '-w', str(timeout * 1000), ip]
+            else:
+                cmd = ['ping', '-c', '1', '-W', str(timeout), ip]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 1
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout
+                if is_windows:
+                    match = re.search(r'時間[<=](\d+)ms', output)
+                else:
+                    match = re.search(r'time[<=]([\d.]+)\s*ms', output)
+                
+                if match:
+                    ping_time = float(match.group(1))
+                    logger.debug(f"Ping {ip}: {ping_time:.1f}ms")
+                    return ping_time
+            
+            return None
+            
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            logger.debug(f"Ping 失敗: {ip} - {e}")
+            return None
+    
+    def ping_devices_batch(
+        self,
+        devices: List[Any],
+        max_workers: int = 10
+    ) -> Dict[str, Optional[float]]:
+        """
+        並發 Ping 多個設備
+        
+        Args:
+            devices: 設備列表（Device 對象）
+            max_workers: 最大並發數
+        
+        Returns:
+            {device_id: ping_time_ms or None}
+        """
+        results = {}
+        
+        if not devices:
+            return results
+        
+        def ping_device_wrapper(device):
+            if not device.ip:
+                return device.device_id, None
+            ping_time = self.ping_device(device.ip)
+            return device.device_id, ping_time
+        
+        logger.debug(f"開始並發 Ping {len(devices)} 台設備")
+        
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(ping_device_wrapper, device): device
+                    for device in devices
+                }
+                
+                for future in as_completed(futures):
+                    try:
+                        device_id, ping_time = future.result()
+                        results[device_id] = ping_time
+                    except Exception as e:
+                        device = futures[future]
+                        logger.error(f"Ping 設備異常: {device.device_id} - {e}")
+                        results[device.device_id] = None
+            
+            logger.debug(f"並發 Ping 完成: {len(results)} 台設備")
+            return results
+            
+        except Exception as e:
+            logger.error(f"並發 Ping 失敗: {e}")
+            return results
+    
+    def check_and_auto_connect_device(
+        self,
+        device: Any,
+        config: Dict[str, Any],
+        retry_manager: Optional[Any] = None
+    ) -> Tuple[DeviceStatus, Optional[str], Optional[float]]:
+        """
+        檢查設備狀態並自動連接（如果需要）
+        
+        Args:
+            device: Device 對象
+            config: 網路監控配置
+            retry_manager: 重試管理器（可選）
+        
+        Returns:
+            (new_status, message, ping_time)
+        """
+        if not device.ip:
+            return device.status, None, None
+        
+        # 1. Ping 設備
+        ping_timeout = config.get('ping_timeout', 2)
+        ping_time = self.ping_device(device.ip, timeout=ping_timeout)
+        
+        if ping_time is None:
+            return DeviceStatus.NOT_CONNECTED, "設備無響應", None
+        
+        # 2. Ping 通，檢查 ADB 連接狀態
+        adb_devices = self.get_devices()
+        connection_str = device.connection_string
+        
+        for adb_device in adb_devices:
+            if adb_device['serial'] == connection_str:
+                if adb_device['state'] == 'device':
+                    # 設備已連接，重置重試次數
+                    if retry_manager:
+                        retry_manager.reset_retry_count(device.device_id)
+                    return DeviceStatus.ONLINE, "設備已連接", ping_time
+                elif adb_device['state'] == 'offline':
+                    return DeviceStatus.OFFLINE, "設備離線", ping_time
+        
+        # 3. 不在 ADB 列表中，但 Ping 通：嘗試自動連接
+        auto_connect = config.get('auto_connect', False)
+        
+        if not auto_connect:
+            return DeviceStatus.NOT_CONNECTED, f"設備在線（Ping: {ping_time:.1f}ms），但未連接", ping_time
+        
+        # 4. 檢查重試次數
+        if retry_manager:
+            retries = retry_manager.get_retry_count(device.device_id)
+            max_retries = config.get('auto_connect_max_retries', 3)
+            cooldown = config.get('auto_connect_cooldown', 30)
+            
+            if retries >= max_retries:
+                if retry_manager.is_in_cooldown(device.device_id, cooldown):
+                    return DeviceStatus.ADB_NOT_ENABLED, f"自動連接失敗（已重試 {retries} 次），冷卻中", ping_time
+                else:
+                    retry_manager.reset_retry_count(device.device_id)
+                    retries = 0
+        
+        # 5. 執行連接
+        success, output = self.connect(device.ip, device.port)
+        
+        if success or "already connected" in output.lower():
+            if retry_manager:
+                retry_manager.reset_retry_count(device.device_id)
+            return DeviceStatus.ONLINE, "自動連接成功", ping_time
+        
+        # 6. 連接失敗
+        if retry_manager:
+            retry_manager.increment_retry_count(device.device_id)
+            retry_manager.set_cooldown(device.device_id)
+        
+        error_msg = output.lower()
+        if "cannot connect" in error_msg or "connection refused" in error_msg or "unable to connect" in error_msg:
+            return DeviceStatus.ADB_NOT_ENABLED, f"無法連接：WiFi ADB 未開啟（Ping: {ping_time:.1f}ms）", ping_time
+        else:
+            return DeviceStatus.NOT_CONNECTED, f"連接失敗：{output}", ping_time
 

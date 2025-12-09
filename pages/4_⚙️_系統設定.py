@@ -6,7 +6,8 @@ from config.settings import (
     get_user_config, 
     save_user_config,
     SCRCPY_CONFIG,
-    SCREENSHOT_CONFIG
+    SCREENSHOT_CONFIG,
+    NETWORK_MONITORING_CONFIG
 )
 from utils.logger import get_logger
 
@@ -31,7 +32,7 @@ def main():
         st.session_state.user_config = get_user_config()
     
     # 創建標籤頁
-    tab1, tab2, tab3 = st.tabs(["📺 scrcpy 監看設定", "📸 截圖預覽設定", "💾 匯入/匯出"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📺 scrcpy 監看設定", "📸 截圖預覽設定", "🌐 網路監控設定", "💾 匯入/匯出"])
     
     # === scrcpy 監看設定 ===
     with tab1:
@@ -287,8 +288,127 @@ def main():
         else:
             st.warning("⚠️ 截圖預覽已停用，設備卡片將不會顯示即時截圖")
     
-    # === 匯入/匯出設定 ===
+    # === 網路監控設定 ===
     with tab3:
+        st.header("🌐 網路監控設定")
+        st.markdown("設定網路監控和自動連接功能")
+        st.markdown("---")
+        
+        network_config = st.session_state.user_config.get('network_monitoring', NETWORK_MONITORING_CONFIG.copy())
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📡 基本設定")
+            
+            network_config['enabled'] = st.checkbox(
+                "啟用網路監控",
+                value=network_config.get('enabled', True),
+                help="啟用後系統會定期 Ping 設備以監控網路狀況"
+            )
+            
+            network_config['ping_interval'] = st.slider(
+                "Ping 間隔（秒）",
+                min_value=5,
+                max_value=60,
+                value=network_config.get('ping_interval', 10),
+                help="每隔多少秒 Ping 一次設備"
+            )
+            
+            network_config['ping_timeout'] = st.slider(
+                "Ping 超時（秒）",
+                min_value=1,
+                max_value=5,
+                value=network_config.get('ping_timeout', 2),
+                help="Ping 請求的超時時間"
+            )
+        
+        with col2:
+            st.subheader("🎯 Ping 目標")
+            
+            ping_targets = network_config.get('ping_targets', {})
+            
+            ping_targets['all_devices'] = st.checkbox(
+                "Ping 所有設備",
+                value=ping_targets.get('all_devices', False),
+                help="對所有設備進行 Ping（包括已連接的設備）"
+            )
+            
+            ping_targets['only_not_connected'] = st.checkbox(
+                "僅 Ping 未連接設備",
+                value=ping_targets.get('only_not_connected', True),
+                help="僅對未連接的設備進行 Ping"
+            )
+            
+            ping_targets['only_wifi_devices'] = st.checkbox(
+                "僅 Ping WiFi 設備",
+                value=ping_targets.get('only_wifi_devices', True),
+                help="僅對 WiFi 連接的設備進行 Ping（USB 設備不需要 Ping）"
+            )
+            
+            network_config['ping_targets'] = ping_targets
+        
+        st.markdown("---")
+        
+        st.subheader("🔄 自動連接")
+        
+        network_config['auto_connect'] = st.checkbox(
+            "啟用自動連接",
+            value=network_config.get('auto_connect', True),
+            help="當設備 Ping 通但未連接時，自動嘗試連接"
+        )
+        
+        if network_config['auto_connect']:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                network_config['auto_connect_max_retries'] = st.number_input(
+                    "最大重試次數",
+                    min_value=1,
+                    max_value=10,
+                    value=network_config.get('auto_connect_max_retries', 3),
+                    help="自動連接失敗後的最大重試次數"
+                )
+            
+            with col2:
+                network_config['auto_connect_cooldown'] = st.number_input(
+                    "失敗後冷卻時間（秒）",
+                    min_value=10,
+                    max_value=300,
+                    value=network_config.get('auto_connect_cooldown', 30),
+                    help="連接失敗後等待多少秒再重試"
+                )
+        else:
+            network_config['auto_connect_max_retries'] = network_config.get('auto_connect_max_retries', 3)
+            network_config['auto_connect_cooldown'] = network_config.get('auto_connect_cooldown', 30)
+        
+        st.session_state.user_config['network_monitoring'] = network_config
+        
+        st.markdown("---")
+        
+        with st.expander("ℹ️ 使用說明"):
+            st.markdown("""
+            ### 網路監控功能說明
+            
+            1. **Ping 監控**
+               - 系統會定期 Ping 設備的 IP 地址
+               - 記錄響應時間來評估網路品質
+               - 只有 WiFi 連接的設備需要 Ping
+            
+            2. **自動連接**
+               - 當設備 Ping 通但未連接時，自動嘗試連接
+               - 如果連接失敗，會重試指定次數
+               - 超過重試次數後，標記為「無法連線」（需要手動開啟 WiFi ADB）
+            
+            3. **設備狀態**
+               - **在線**：已連接並可用
+               - **離線**：已連接但狀態異常
+               - **未連接**：Ping 不通，設備可能關機
+               - **無法連線**：Ping 通但無法連接（WiFi ADB 未開啟）
+            """)
+    
+    # === 匯入/匯出設定 ===
+    with tab4:
         st.header("💾 匯入/匯出設定")
         st.markdown("備份或恢復您的系統設定")
         st.markdown("---")
@@ -358,6 +478,7 @@ def main():
             default_config = {
                 "scrcpy": SCRCPY_CONFIG.copy(),
                 "screenshot": SCREENSHOT_CONFIG.copy(),
+                "network_monitoring": NETWORK_MONITORING_CONFIG.copy(),
             }
             st.session_state.user_config = default_config
             if save_user_config(default_config):

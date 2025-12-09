@@ -1,6 +1,7 @@
 """
 設備註冊表 - 管理設備序號和歷史記錄
 """
+import traceback
 from typing import Dict, List, Optional
 from datetime import datetime
 from tinydb import TinyDB, Query
@@ -89,21 +90,13 @@ class DeviceRegistry:
                     self.query.serial == serial
                 )
             
-            # 更新設備資料
-            logger.debug(f"準備更新設備資料到資料庫: {serial}")
-            logger.debug(f"device_data 類型: {type(device_data)}")
-            logger.debug(f"device_data 內容: {device_data}")
-            
             self.devices_db.update(
                 device_data,
                 self.query.serial == serial
             )
-            
-            logger.debug(f"設備資料已更新: {serial}")
             return True
             
         except Exception as e:
-            import traceback
             logger.error(f"更新設備失敗: {e}")
             logger.error(f"錯誤詳情:\n{traceback.format_exc()}")
             return False
@@ -185,16 +178,13 @@ class DeviceRegistry:
         return None
     
     def reorder_devices(self):
-        """重新排序資料庫中的設備（按照 sort_order）- 公共方法"""
+        """重新排序資料庫中的設備（按照 sort_order）"""
         try:
-            # 直接讀取原始數據（避免遞歸調用 get_all_devices）
             all_data = self.devices_db.all()
             
-            # 如果設備數量為0，不需要重新排序
             if len(all_data) == 0:
                 return
             
-            # 解析為 Device 對象並排序
             devices = []
             for data in all_data:
                 try:
@@ -204,13 +194,10 @@ class DeviceRegistry:
                     logger.error(f"解析設備資料失敗: {e}, 資料: {data}")
                     continue
             
-            # 按照 sort_order 排序
             sorted_devices = sorted(devices, key=lambda d: d.sort_order)
             
-            # 清空資料庫
             self.devices_db.truncate()
             
-            # 按照排序後的順序重新插入
             for device in sorted_devices:
                 device_data = device.to_dict()
                 self.devices_db.insert(device_data)
@@ -229,7 +216,6 @@ class DeviceRegistry:
         """
         try:
             device_data = device.to_dict()
-            logger.debug(f"準備保存設備資料: {device.serial}")
             
             if self.is_known_device(device.serial):
                 # 更新現有設備
@@ -247,14 +233,9 @@ class DeviceRegistry:
                 return result
                 
         except Exception as e:
-            import traceback
             logger.error(f"儲存設備失敗: {e}")
             logger.error(f"錯誤詳情:\n{traceback.format_exc()}")
             logger.error(f"設備序號: {device.serial}")
-            try:
-                logger.error(f"設備資料: {device.to_dict()}")
-            except:
-                logger.error("無法序列化設備資料")
             return False
     
     def get_statistics(self) -> Dict:

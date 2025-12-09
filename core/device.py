@@ -34,6 +34,7 @@ class Device(BaseModel):
     battery: int = Field(default=0, description="電量百分比")
     temperature: float = Field(default=0.0, description="溫度（攝氏）")
     is_charging: bool = Field(default=False, description="是否充電中")
+    ping_ms: Optional[float] = Field(default=None, description="Ping 響應時間（毫秒）")
     
     # 管理資訊
     room_id: Optional[str] = Field(default=None, description="所屬房間 ID")
@@ -96,16 +97,13 @@ class Device(BaseModel):
     
     def to_dict(self) -> Dict[str, Any]:
         """轉換為字典"""
-        # 使用 Pydantic v2 的 model_dump，mode='python' 確保正確序列化
         data = self.model_dump(mode='python', exclude_none=False)
         
-        # 確保 datetime 轉換為 ISO 字串
         if isinstance(data.get('last_seen'), datetime):
             data['last_seen'] = data['last_seen'].isoformat()
         if isinstance(data.get('first_connected'), datetime):
             data['first_connected'] = data['first_connected'].isoformat()
         
-        # 移除 None 值（在轉換後移除，避免遺漏某些欄位）
         data = {k: v for k, v in data.items() if v is not None}
         
         return data
