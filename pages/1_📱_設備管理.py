@@ -145,12 +145,13 @@ if not has_dialog_open:
         pass
 
 # 初始化系統
-from utils.init import ensure_initialization, ensure_action_registry
+from utils.init import ensure_initialization, ensure_action_registry, ensure_room_registry
 
 if not ensure_initialization():
     st.stop()
 
 ensure_action_registry()
+ensure_room_registry()  # 需要 room_registry 來查找設備所屬的房間
 
 # Session state 初始化
 if 'show_add_device_dialog' not in st.session_state:
@@ -508,10 +509,22 @@ def execute_action_dialog(device: Device):
     with col1:
         if st.button("▶️ 執行", type="primary", use_container_width=True):
             with st.spinner("執行中..."):
+                # 自動查找設備所屬的房間並獲取 Socket Server 信息
+                room_info = None
+                if 'room_registry' in st.session_state:
+                    device_room = st.session_state.room_registry.get_device_room(device.device_id)
+                    if device_room and device_room.socket_ip and device_room.socket_port:
+                        room_info = {
+                            'socket_ip': device_room.socket_ip,
+                            'socket_port': device_room.socket_port
+                        }
+                        logger.debug(f"📡 自動添加 Socket Server 參數: {device.display_name} -> {device_room.name} ({device_room.socket_ip}:{device_room.socket_port})")
+                
                 # 執行動作
                 success, message = st.session_state.adb_manager.execute_action(
                     device.connection_string,
-                    selected_action
+                    selected_action,
+                    room_info=room_info
                 )
                 
                 # 更新執行統計
