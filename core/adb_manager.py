@@ -542,6 +542,35 @@ class ADBManager:
             f"am start -n {package}/{activity}",
             device
         )
+
+    def launch_app_with_extras(
+        self, 
+        device: str, 
+        package: str, 
+        activity: str, 
+        extras: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """
+        啟動應用程式並帶入 Intent Extras
+        
+        Args:
+            device: 設備序列號
+            package: 套件名稱
+            activity: Activity 名稱 (e.g., .MainActivity)
+            extras: 參數字典 (支援 str, int, bool)
+        """
+        cmd = f"am start -n {package}/{activity}"
+        
+        for key, value in extras.items():
+            if isinstance(value, int):
+                cmd += f" --ei {key} {value}"
+            elif isinstance(value, bool):
+                cmd += f" --ez {key} {'true' if value else 'false'}"
+            else:
+                # 預設為字串
+                cmd += f" --es {key} \"{str(value)}\""
+                
+        return self.execute_shell_command(cmd, device)
     
     def stop_app(self, device: str, package: str) -> Tuple[bool, str]:
         """關閉應用程式"""

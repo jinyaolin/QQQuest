@@ -23,4 +23,5 @@ streamlit-autorefresh>=0.0.1
 pillow>=10.0.0
 
 # 其他工具
-python-dotenv>=1.0.0
+
+
