@@ -18,6 +18,10 @@ class ADBManager:
     
     def __init__(self):
         self._check_adb_available()
+        # 緩存設備列表（避免頻繁調用）
+        self._devices_cache: Optional[List[Dict[str, str]]] = None
+        self._devices_cache_time: float = 0
+        self._devices_cache_ttl: float = 1.0  # 緩存有效期（秒）
     
     def _check_adb_available(self) -> bool:
         """檢查 ADB 是否可用"""
@@ -94,15 +98,32 @@ class ADBManager:
         """執行 ADB shell 命令"""
         return self.execute_command(f"shell {command}", device, timeout)
     
-    def get_devices(self) -> List[Dict[str, str]]:
+    def get_devices(self, use_cache: bool = True) -> List[Dict[str, str]]:
         """
-        取得所有連接的設備
+        取得所有連接的設備（帶緩存機制）
+        
+        Args:
+            use_cache: 是否使用緩存（預設 True）
         
         Returns:
             設備列表，每個設備包含 serial, state, connection_type
         """
+        import time
+        
+        # 檢查緩存
+        if use_cache and self._devices_cache is not None:
+            current_time = time.time()
+            if current_time - self._devices_cache_time < self._devices_cache_ttl:
+                logger.debug(f"使用緩存的設備列表（{len(self._devices_cache)} 台設備）")
+                return self._devices_cache
+        
+        # 執行 ADB 命令獲取設備列表
         success, output = self.execute_command("devices -l")
         if not success:
+            if use_cache and self._devices_cache is not None:
+                # 如果命令失敗但緩存存在，返回緩存
+                logger.debug("ADB 命令失敗，使用緩存的設備列表")
+                return self._devices_cache
             return []
         
         devices = []
@@ -132,8 +153,19 @@ class ADBManager:
                 'connection_type': connection_type
             })
         
-        logger.info(f"發現 {len(devices)} 台設備")
+        # 更新緩存
+        if use_cache:
+            self._devices_cache = devices
+            self._devices_cache_time = time.time()
+        
+        logger.debug(f"發現 {len(devices)} 台設備")
         return devices
+    
+    def clear_devices_cache(self):
+        """清除設備列表緩存（在連接或斷開設備後調用）"""
+        self._devices_cache = None
+        self._devices_cache_time = 0
+        logger.debug("設備列表緩存已清除")
     
     def connect(self, ip: str, port: int = ADB_DEFAULT_PORT) -> Tuple[bool, str]:
         """連接到設備（WiFi ADB）"""
@@ -142,6 +174,8 @@ class ADBManager:
         
         if success or "already connected" in output.lower():
             logger.info(f"已連接到設備: {target}")
+            # 清除緩存，強制下次獲取最新列表
+            self.clear_devices_cache()
             return True, output
         
         logger.error(f"連接失敗: {target} - {output}")
@@ -151,6 +185,9 @@ class ADBManager:
         """斷開設備連接"""
         success, output = self.execute_command(f"disconnect {device}")
         logger.info(f"斷開設備: {device}")
+        # 清除緩存，強制下次獲取最新列表
+        if success:
+            self.clear_devices_cache()
         return success, output
     
     def connect_batch(
@@ -876,7 +913,7 @@ class ADBManager:
             logger.error(f"❌ 保持喚醒設置失敗: {device} - {e}")
             return False, f"保持喚醒設置失敗: {str(e)}"
     
-    def execute_launch_app(self, device: str, params: Dict[str, Any]) -> Tuple[bool, str]:
+    def execute_launch_app(self, device: str, params: Dict[str, Any], room_info: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """
         執行啟動應用動作
         
@@ -887,6 +924,9 @@ class ADBManager:
                 - activity: Activity 名稱（選填）
                 - stop_existing: 是否先關閉已運行的實例（預設 False）
                 - wait: 是否等待啟動完成（預設 True）
+            room_info: 房間信息（可選）
+                - socket_ip: Socket Server IP 地址
+                - socket_port: Socket Server 端口
         
         Returns:
             (成功, 訊息)
@@ -904,8 +944,17 @@ class ADBManager:
                 self.execute_shell_command(f"am force-stop {package}", device)
                 logger.info(f"已關閉已運行的實例: {package}")
             
+            # 構建啟動命令
             if activity:
                 cmd = f"am start -n {package}/{activity}"
+                
+                # 如果提供了房間信息，添加 Socket Server 參數
+                if room_info and room_info.get('socket_ip') and room_info.get('socket_port'):
+                    socket_ip = room_info['socket_ip']
+                    socket_port = room_info['socket_port']
+                    cmd += f" --es qqquest_server_ip \"{socket_ip}\""
+                    cmd += f" --ei qqquest_server_port {socket_port}"
+                    logger.info(f"📡 添加 Socket Server 參數: {socket_ip}:{socket_port}")
             else:
                 cmd = f"monkey -p {package} 1"
             
@@ -1149,13 +1198,14 @@ class ADBManager:
             logger.error(f"❌ 安裝 APK 失敗: {e}")
             return False, f"安裝失敗: {str(e)}"
     
-    def execute_action(self, device: str, action) -> Tuple[bool, str]:
+    def execute_action(self, device: str, action, room_info: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """
         執行動作（通用方法）
         
         Args:
             device: 設備序列號或 IP:Port
             action: Action 對象
+            room_info: 房間信息（可選），包含 socket_ip 和 socket_port
         
         Returns:
             (成功, 訊息)
@@ -1173,7 +1223,7 @@ class ADBManager:
             elif action.action_type == ActionType.KEEP_AWAKE:
                 return self.execute_keep_awake(device, action.params)
             elif action.action_type == ActionType.LAUNCH_APP:
-                return self.execute_launch_app(device, action.params)
+                return self.execute_launch_app(device, action.params, room_info)
             elif action.action_type == ActionType.STOP_APP:
                 return self.execute_stop_app(device, action.params)
             elif action.action_type == ActionType.RESTART_APP:
@@ -1196,7 +1246,8 @@ class ADBManager:
         devices: List[str],
         action,
         max_workers: int = 10,
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        room_info: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[str, bool, str]]:
         """
         並發執行動作到多個設備（大幅提升批量操作速度）
@@ -1230,7 +1281,7 @@ class ADBManager:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 提交所有任務
                 future_to_device = {
-                    executor.submit(self.execute_action, device, action): device
+                    executor.submit(self.execute_action, device, action, room_info): device
                     for device in devices
                 }
                 

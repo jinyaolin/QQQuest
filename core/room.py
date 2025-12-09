@@ -15,6 +15,10 @@ class Room(BaseModel):
     max_devices: int = Field(default=0, ge=0, description="最大設備數量（0=無限制）")
     device_ids: List[str] = Field(default_factory=list, description="房間內設備 ID 列表")
     
+    # Socket Server 設定
+    socket_ip: Optional[str] = Field(None, description="Socket Server IP 地址")
+    socket_port: Optional[int] = Field(None, ge=1, le=65535, description="Socket Server 端口")
+    
     # 時間戳
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)

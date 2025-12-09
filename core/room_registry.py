@@ -33,7 +33,9 @@ class RoomRegistry:
         self,
         name: str,
         description: Optional[str] = None,
-        max_devices: int = 0
+        max_devices: int = 0,
+        socket_ip: Optional[str] = None,
+        socket_port: Optional[int] = None
     ) -> Optional[Room]:
         """
         創建新房間
@@ -42,6 +44,8 @@ class RoomRegistry:
             name: 房間名稱
             description: 房間說明
             max_devices: 最大設備數量（0=無限制）
+            socket_ip: Socket Server IP 地址（可選）
+            socket_port: Socket Server 端口（可選）
         
         Returns:
             Room 對象，失敗返回 None
@@ -56,7 +60,9 @@ class RoomRegistry:
             room = Room(
                 name=name,
                 description=description,
-                max_devices=max_devices
+                max_devices=max_devices,
+                socket_ip=socket_ip,
+                socket_port=socket_port
             )
             
             # 儲存到資料庫

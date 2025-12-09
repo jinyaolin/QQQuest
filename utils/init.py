@@ -69,6 +69,48 @@ def ensure_room_registry():
     return True
 
 
+def ensure_socket_server_manager():
+    """確保 Socket Server 管理器已初始化並啟動所有房間的服務器"""
+    if 'socket_server_manager' not in st.session_state:
+        try:
+            from core.socket_server_manager import get_socket_server_manager
+            st.session_state.socket_server_manager = get_socket_server_manager()
+            logger.debug("Socket Server 管理器已初始化")
+        except Exception as e:
+            logger.error(f"Socket Server 管理器初始化失敗: {e}")
+            return False
+    
+    # 啟動所有房間的 Socket Server（確保 room_registry 已初始化）
+    try:
+        # 確保 room_registry 已初始化
+        ensure_room_registry()
+        
+        if 'room_registry' in st.session_state:
+            room_registry = st.session_state.room_registry
+            socket_manager = st.session_state.socket_server_manager
+            
+            rooms = room_registry.get_all_rooms()
+            for room in rooms:
+                # 只啟動配置了 IP 和 Port 的房間
+                if room.socket_ip and room.socket_port:
+                    # 檢查是否已在運行
+                    if not socket_manager.is_server_running(room.room_id):
+                        success, msg = socket_manager.start_server(
+                            room.room_id,
+                            room.name,
+                            room.socket_ip,
+                            room.socket_port
+                        )
+                        if success:
+                            logger.info(f"✅ 自動啟動 Socket Server: {room.name}")
+                        else:
+                            logger.warning(f"⚠️ 自動啟動 Socket Server 失敗: {room.name} - {msg}")
+    except Exception as e:
+        logger.error(f"啟動房間 Socket Server 失敗: {e}")
+    
+    return True
+
+
 def init_all():
     """
     初始化所有組件
@@ -79,6 +121,7 @@ def init_all():
     
     ensure_action_registry()
     ensure_room_registry()
+    ensure_socket_server_manager()
     
     return True
 

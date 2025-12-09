@@ -1,0 +1,20 @@
+{
+  "name": "qqquest-socket-servers",
+  "version": "1.0.0",
+  "description": "TCP/IP Socket Servers for QQQuest rooms",
+  "main": "room_socket_server.js",
+  "scripts": {
+    "start": "node room_socket_server.js"
+  },
+  "keywords": [
+    "socket",
+    "tcp",
+    "server"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=12.0.0"
+  }
+}
+

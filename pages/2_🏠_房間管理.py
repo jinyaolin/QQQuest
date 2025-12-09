@@ -5,6 +5,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from typing import Optional
 import time
+import json
 from datetime import datetime
 from core.room import Room
 from core.room_registry import RoomRegistry
@@ -76,10 +77,16 @@ if not has_dialog_open:
     count = st_autorefresh(interval=5000, key="room_refresh")
 
 # 初始化系統
-from utils.init import init_all
+from utils.init import init_all, ensure_room_registry, ensure_socket_server_manager
 
 if not init_all():
     st.stop()
+
+# 確保房間註冊管理器已初始化（雙重檢查）
+ensure_room_registry()
+
+# 確保 Socket Server 管理器已初始化
+ensure_socket_server_manager()
 
 # Session state 初始化
 if 'show_add_room_dialog' not in st.session_state:
@@ -167,12 +174,30 @@ def add_room_dialog():
             room = st.session_state.room_registry.create_room(
                 name=name,
                 description=description if description else None,
-                max_devices=max_devices
+                max_devices=max_devices,
+                socket_ip=socket_ip if socket_ip else None,
+                socket_port=socket_port if socket_ip else None
             )
             
             if room:
                 st.success(f"✅ 房間已創建：{room.display_name}")
                 logger.info(f"✅ 創建房間成功: {room.display_name}")
+                
+                # 如果配置了 Socket Server，自動啟動
+                if room.socket_ip and room.socket_port:
+                    if 'socket_server_manager' in st.session_state:
+                        socket_manager = st.session_state.socket_server_manager
+                        success, msg = socket_manager.start_server(
+                            room.room_id,
+                            room.name,
+                            room.socket_ip,
+                            room.socket_port
+                        )
+                        if success:
+                            st.info(f"📡 Socket Server 已啟動: {room.socket_ip}:{room.socket_port}")
+                        else:
+                            st.warning(f"⚠️ Socket Server 啟動失敗: {msg}")
+                
                 st.session_state.show_add_room_dialog = False
                 time.sleep(0.5)
                 st.rerun()
@@ -256,6 +281,36 @@ def edit_room_dialog(room: Room):
             st.warning(f"⚠️ 當前房間有 {room.device_count} 台設備，超過新設定的上限！")
     
     st.markdown("---")
+    st.subheader("🔌 Socket Server 設定（選填）")
+    
+    # Socket IP 和 Port
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        socket_ip = st.text_input(
+            "Socket Server IP",
+            value=room.socket_ip if room.socket_ip else "",
+            placeholder="0.0.0.0 或 127.0.0.1",
+            help="Socket Server 監聽的 IP 地址（留空則不啟動）",
+            key=f"edit_room_socket_ip_{room.room_id}"
+        )
+    
+    with col2:
+        socket_port = st.number_input(
+            "Socket Server Port",
+            min_value=1,
+            max_value=65535,
+            value=room.socket_port if room.socket_port else 3000,
+            help="Socket Server 監聽的端口",
+            key=f"edit_room_socket_port_{room.room_id}"
+        )
+    
+    if socket_ip:
+        st.info(f"📡 Socket Server 將在啟動時監聽 {socket_ip}:{socket_port}")
+    else:
+        st.caption("💡 留空 IP 地址則不會啟動 Socket Server")
+    
+    st.markdown("---")
     
     # 按鈕
     col1, col2 = st.columns(2)
@@ -275,13 +330,44 @@ def edit_room_dialog(room: Room):
                     return
             
             # 更新房間
+            old_socket_ip = room.socket_ip
+            old_socket_port = room.socket_port
+            
             room.name = name
             room.description = description if description else None
             room.max_devices = max_devices
+            room.socket_ip = socket_ip if socket_ip else None
+            room.socket_port = socket_port if socket_ip else None
             
             if st.session_state.room_registry.update_room(room):
                 st.success(f"✅ 房間已更新：{room.display_name}")
                 logger.info(f"✅ 更新房間成功: {room.display_name}")
+                
+                # 處理 Socket Server
+                if 'socket_server_manager' in st.session_state:
+                    socket_manager = st.session_state.socket_server_manager
+                    
+                    # 如果 Socket Server 配置改變，重啟服務器
+                    if (old_socket_ip != room.socket_ip or old_socket_port != room.socket_port):
+                        # 停止舊的服務器（如果存在）
+                        if old_socket_ip and old_socket_port:
+                            socket_manager.stop_server(room.room_id)
+                        
+                        # 啟動新的服務器（如果配置了）
+                        if room.socket_ip and room.socket_port:
+                            success, msg = socket_manager.start_server(
+                                room.room_id,
+                                room.name,
+                                room.socket_ip,
+                                room.socket_port
+                            )
+                            if success:
+                                st.info(f"📡 Socket Server 已重啟: {room.socket_ip}:{room.socket_port}")
+                            else:
+                                st.warning(f"⚠️ Socket Server 啟動失敗: {msg}")
+                        elif old_socket_ip and old_socket_port:
+                            st.info("📡 Socket Server 已停止（IP 或 Port 已清空）")
+                
                 st.session_state[f'edit_room_{room.room_id}'] = False
                 time.sleep(0.5)
                 st.rerun()
@@ -336,6 +422,14 @@ def delete_room_dialog(room: Room):
     
     with col1:
         if st.button("✅ 確定刪除", type="primary", use_container_width=True):
+            # 停止 Socket Server（如果存在）
+            if room.socket_ip and room.socket_port:
+                if 'socket_server_manager' in st.session_state:
+                    socket_manager = st.session_state.socket_server_manager
+                    socket_manager.stop_server(room.room_id)
+                    logger.info(f"🛑 已停止 Socket Server: {room.name}")
+            
+            # 刪除房間
             if st.session_state.room_registry.delete_room(room.room_id):
                 st.success("✅ 房間已刪除")
                 logger.info(f"🗑️ 刪除房間: {room.display_name}")
@@ -634,11 +728,20 @@ def execute_action_on_room_dialog(room: Room):
                 progress_text.text(f"🚀 執行進度：{completed}/{total} 台設備")
             
             with st.spinner("🚀 並發執行中..."):
+                # 準備房間信息（如果房間配置了 Socket Server）
+                room_info = None
+                if room.socket_ip and room.socket_port:
+                    room_info = {
+                        'socket_ip': room.socket_ip,
+                        'socket_port': room.socket_port
+                    }
+                
                 # 使用並發方法執行
                 batch_results = st.session_state.adb_manager.execute_action_batch(
                     device_list,
                     selected_action,
-                    progress_callback=update_progress
+                    progress_callback=update_progress,
+                    room_info=room_info
                 )
                 
                 # 處理結果
@@ -946,7 +1049,7 @@ def reconnect_room_devices_dialog(room: Room):
 
 
 @st.dialog("⚡ 執行動作", width="large")
-def execute_device_action_dialog(device):
+def execute_device_action_dialog(device, room: Optional[Room] = None):
     """在設備上執行動作對話框（房間視圖使用）"""
     # 隱藏對話框右上角的關閉按鈕
     st.markdown("""
@@ -1060,10 +1163,19 @@ def execute_device_action_dialog(device):
     with col1:
         if st.button("▶️ 執行", type="primary", use_container_width=True):
             with st.spinner("執行中..."):
+                # 準備房間信息（如果提供了房間且房間配置了 Socket Server）
+                room_info = None
+                if room and room.socket_ip and room.socket_port:
+                    room_info = {
+                        'socket_ip': room.socket_ip,
+                        'socket_port': room.socket_port
+                    }
+                
                 # 執行動作
                 success, message = st.session_state.adb_manager.execute_action(
                     device.connection_string,
-                    selected_action
+                    selected_action,
+                    room_info=room_info
                 )
                 
                 # 更新執行統計
@@ -1090,6 +1202,11 @@ def execute_device_action_dialog(device):
 @st.dialog("🏠 房間視圖", width="large")
 def room_view_dialog(room: Room):
     """房間視圖對話框 - 顯示房間內所有設備"""
+    # 確保必要的組件已初始化
+    from utils.init import ensure_room_registry, ensure_initialization
+    ensure_initialization()
+    ensure_room_registry()
+    
     # 隱藏對話框右上角的關閉按鈕
     st.markdown("""
         <style>
@@ -1183,6 +1300,151 @@ def room_view_dialog(room: Room):
     
     st.markdown("---")
     
+    # Socket Server 監控（如果房間配置了 Socket Server）
+    if room.socket_ip and room.socket_port:
+        st.markdown("### 📡 Socket Server 監控")
+        
+        # 檢查 Socket Server 狀態
+        socket_running = False
+        if 'socket_server_manager' in st.session_state:
+            socket_manager = st.session_state.socket_server_manager
+            socket_running = socket_manager.is_server_running(room.room_id)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if socket_running:
+                st.success(f"🟢 Socket Server 運行中 - {room.socket_ip}:{room.socket_port}")
+            else:
+                st.warning(f"🔴 Socket Server 未運行 - {room.socket_ip}:{room.socket_port}")
+        
+        with col2:
+            if socket_running:
+                if st.button("🔄 重啟", key=f"restart_socket_in_view_{room.room_id}", use_container_width=True):
+                    if 'socket_server_manager' in st.session_state:
+                        socket_manager = st.session_state.socket_server_manager
+                        success, msg = socket_manager.restart_server(
+                            room.room_id,
+                            room.name,
+                            room.socket_ip,
+                            room.socket_port
+                        )
+                        if success:
+                            st.success("✅ Socket Server 已重啟")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+        
+        # 日誌視窗和命令輸入
+        tab1, tab2 = st.tabs(["📋 日誌監看", "⌨️ 命令發送"])
+        
+        with tab1:
+            # 日誌視窗
+            from core.socket_client import read_socket_server_log
+            
+            # 讀取日誌
+            log_lines = read_socket_server_log(room.room_id, room.socket_port, lines=200)
+            
+            if log_lines:
+                # 顯示日誌（只讀文本框）
+                log_text = ''.join(log_lines)
+                st.text_area(
+                    "Socket Server 日誌",
+                    value=log_text,
+                    height=300,
+                    disabled=True,
+                    key=f"socket_log_{room.room_id}"
+                )
+                
+                # 刷新按鈕
+                if st.button("🔄 刷新日誌", key=f"refresh_log_{room.room_id}"):
+                    st.rerun()
+            else:
+                st.info("📝 日誌文件不存在或為空")
+                if st.button("🔄 刷新日誌", key=f"refresh_log_{room.room_id}"):
+                    st.rerun()
+        
+        with tab2:
+            # 命令輸入欄
+            st.markdown("**發送命令到 Socket Server**")
+            
+            # 命令類型選擇
+            command_type = st.selectbox(
+                "命令類型",
+                options=["echo", "command"],
+                index=0,
+                help="選擇要發送的命令類型",
+                key=f"command_type_{room.room_id}"
+            )
+            
+            # 命令數據輸入
+            command_data = None
+            if command_type == "echo":
+                command_data = st.text_input(
+                    "要回顯的數據",
+                    placeholder="輸入要回顯的文本",
+                    key=f"echo_data_{room.room_id}"
+                )
+            elif command_type == "command":
+                command_data = st.text_input(
+                    "命令數據（JSON 格式）",
+                    placeholder='{"action": "your_command"}',
+                    key=f"command_data_{room.room_id}"
+                )
+            
+            # 發送按鈕
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if st.button("📤 發送命令", type="primary", use_container_width=True, key=f"send_command_{room.room_id}"):
+                    if socket_running:
+                        from core.socket_client import SocketClient
+                        
+                        try:
+                            with SocketClient(room.socket_ip, room.socket_port) as client:
+                                # 準備數據
+                                data = None
+                                if command_type == "echo" and command_data:
+                                    data = {"text": command_data}
+                                elif command_type == "command" and command_data:
+                                    try:
+                                        data = json.loads(command_data)
+                                    except json.JSONDecodeError:
+                                        st.error("❌ 無效的 JSON 格式")
+                                        st.stop()
+                                
+                                # 發送命令
+                                success, response = client.send_command(command_type, data)
+                                
+                                if success:
+                                    st.success("✅ 命令發送成功")
+                                    st.json(response)
+                                else:
+                                    st.error(f"❌ 命令發送失敗: {response.get('message', '未知錯誤')}")
+                        except Exception as e:
+                            st.error(f"❌ 連接失敗: {str(e)}")
+                    else:
+                        st.error("❌ Socket Server 未運行，無法發送命令")
+            
+            with col2:
+                if st.button("🔄 刷新", use_container_width=True, key=f"refresh_command_{room.room_id}"):
+                    st.rerun()
+            
+            # 顯示幫助信息
+            with st.expander("💡 命令說明"):
+                st.markdown("""
+                **命令類型說明：**
+                - **echo**: 回顯命令，服務器會返回發送的數據
+                - **command**: 自定義命令，可以發送 JSON 格式的數據
+                
+                **使用示例：**
+                - 選擇 `echo`，輸入文本後發送，服務器會回顯該文本
+                - 選擇 `command`，輸入 JSON 格式的數據發送自定義命令
+                """)
+        
+        st.markdown("---")
+    
+    st.markdown("---")
+    
     # 顯示設備列表
     if not room_devices:
         st.info("📭 房間內沒有設備，點擊「管理設備」添加設備")
@@ -1246,6 +1508,8 @@ def render_devices_in_room(devices, room):
                             if device.is_online:
                                 if st.button("⚡ 執行動作", key=f"room_dev_action_{device.device_id}", use_container_width=True):
                                     # 關閉房間視圖，打開執行動作對話框
+                                    # 保存房間信息到 session state，以便在對話框中使用
+                                    st.session_state[f'execute_action_room_{device.device_id}'] = room.room_id
                                     st.session_state[f'show_room_view_{room.room_id}'] = False
                                     st.session_state[f'execute_action_on_{device.device_id}'] = True
                                     st.rerun()
@@ -1374,6 +1638,20 @@ def render_room_card(room: Room):
                     st.button("🔌 重新連接", key=f"btn_reconnect_room_{room.room_id}", use_container_width=True, disabled=True)
                     st.caption("（房間內無設備）")
                 
+                # 重新啟動 Socket Server
+                if room.socket_ip and room.socket_port:
+                    # 檢查 Socket Server 狀態
+                    is_running = False
+                    if 'socket_server_manager' in st.session_state:
+                        socket_manager = st.session_state.socket_server_manager
+                        is_running = socket_manager.is_server_running(room.room_id)
+                    
+                    status_text = "🟢 運行中" if is_running else "🔴 未運行"
+                    if st.button(f"🔄 重啟 Socket Server ({status_text})", key=f"btn_restart_socket_{room.room_id}", use_container_width=True):
+                        st.session_state[f'restart_socket_{room.room_id}'] = True
+                        st.rerun()
+                    st.caption(f"📡 {room.socket_ip}:{room.socket_port}")
+                
                 st.divider()
                 
                 # 編輯房間
@@ -1463,7 +1741,15 @@ def main():
     all_devices = st.session_state.device_registry.get_all_devices()
     for device in all_devices:
         if st.session_state.get(f'execute_action_on_{device.device_id}'):
-            execute_device_action_dialog(device)
+            # 獲取房間信息（如果從房間視圖觸發）
+            device_room = None
+            room_id = st.session_state.get(f'execute_action_room_{device.device_id}')
+            if room_id:
+                device_room = st.session_state.room_registry.get_room(room_id)
+            else:
+                # 如果沒有保存的房間 ID，嘗試查找設備所屬的房間
+                device_room = st.session_state.room_registry.get_device_room(device.device_id)
+            execute_device_action_dialog(device, device_room)
     
     # 處理房間對話框
     for room in rooms:
@@ -1484,6 +1770,35 @@ def main():
         
         if st.session_state.get(f'show_reconnect_room_{room.room_id}'):
             reconnect_room_devices_dialog(room)
+        
+        # 處理重新啟動 Socket Server
+        if st.session_state.get(f'restart_socket_{room.room_id}'):
+            if room.socket_ip and room.socket_port:
+                if 'socket_server_manager' in st.session_state:
+                    socket_manager = st.session_state.socket_server_manager
+                    with st.spinner("正在重啟 Socket Server..."):
+                        success, msg = socket_manager.restart_server(
+                            room.room_id,
+                            room.name,
+                            room.socket_ip,
+                            room.socket_port
+                        )
+                        if success:
+                            st.success(f"✅ Socket Server 已重啟: {room.socket_ip}:{room.socket_port}")
+                            logger.info(f"✅ 重啟 Socket Server 成功: {room.name} ({room.socket_ip}:{room.socket_port})")
+                        else:
+                            st.error(f"❌ Socket Server 重啟失敗: {msg}")
+                            logger.error(f"❌ 重啟 Socket Server 失敗: {room.name} - {msg}")
+                        time.sleep(1)
+                else:
+                    st.error("❌ Socket Server 管理器未初始化")
+                    time.sleep(1)
+            else:
+                st.warning("⚠️ 此房間未配置 Socket Server")
+                time.sleep(1)
+            
+            st.session_state[f'restart_socket_{room.room_id}'] = False
+            st.rerun()
 
 
 if __name__ == "__main__":
