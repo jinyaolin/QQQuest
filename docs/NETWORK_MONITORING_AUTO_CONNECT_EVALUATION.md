@@ -667,3 +667,4 @@ def sync_device_status_with_ping(devices: List[Device]):
 
 
 
+

@@ -178,3 +178,4 @@ def read_socket_server_log(room_id: str, socket_port: int, lines: int = 100) -> 
         logger.error(f"讀取日誌文件失敗: {e}")
         return []
 
+
