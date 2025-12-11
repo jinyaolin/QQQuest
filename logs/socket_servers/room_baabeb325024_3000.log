@@ -90,3 +90,31 @@
 [2025-12-09T11:03:34.725Z] 📨 收到消息 (192.168.68.107:58432): {"type":"echo","data":{}}
 [2025-12-09T11:03:34.725Z] ❌ Socket 錯誤 (192.168.68.107:58432): read ECONNRESET
 [2025-12-09T11:03:34.725Z] ❌ 客戶端斷開連接: 192.168.68.107:58432
+[2025-12-10T12:11:03.812Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:04.298Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:06.886Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:07.377Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:07.952Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:08.436Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:08.723Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:09.246Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:14.764Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:15.244Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:20.298Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:20.525Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:24.887Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:25.388Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:29.880Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:30.379Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:34.884Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:35.404Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:38.113Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:38.624Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:39.169Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:39.680Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:39.838Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:40.358Z] ❌ 服務器錯誤: listen EADDRNOTAVAIL: address not available 192.168.68.107:3000
+[2025-12-10T12:11:47.270Z] 🚀 Socket Server 已啟動
+[2025-12-10T12:11:47.272Z] 📡 監聽地址: 192.168.50.226:3000
+[2025-12-10T12:11:47.272Z] 🏠 房間: 東方美人 (ID: baabeb325024)
+[2025-12-10T12:11:47.272Z] 📝 日誌文件: /Users/jinyaolin/QQquest/logs/socket_servers/room_baabeb325024_3000.log
