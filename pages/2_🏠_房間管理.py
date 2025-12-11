@@ -1626,7 +1626,7 @@ def room_view_dialog(room: Room):
             # 命令類型選擇
             command_type = st.selectbox(
                 "命令類型",
-                options=["send_params", "echo", "command"],
+                options=["send_params", "echo", "command", "who"],
                 index=0,
                 help="選擇要發送的命令類型",
                 key=f"command_type_{room.room_id}"
@@ -1666,6 +1666,8 @@ def room_view_dialog(room: Room):
                 )
                 # 將序列化後的對象作為數據準備發送
                 # 注意：後面的邏輯會再次檢查 command_type
+            elif command_type == "who":
+                st.info("ℹ️ 查詢當前連接到 Socket Server 的所有客戶端")
             
             # 發送按鈕
             col1, col2 = st.columns([3, 1])

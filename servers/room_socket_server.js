@@ -150,6 +150,27 @@ function handleMessage(socket, message, clientInfo) {
             }) + '\n');
             break;
 
+        case 'who':
+            // 查詢在線客戶端
+            // 格式: { type: 'who' }
+            const onlineClients = [];
+            for (const info of clients.values()) {
+                onlineClients.push({
+                    device_id: info.device_id,
+                    address: info.address,
+                    is_server: info.is_server,
+                    connected_at: info.connected_at
+                });
+            }
+
+            socket.write(JSON.stringify({
+                type: 'who_response',
+                count: onlineClients.length,
+                clients: onlineClients,
+                timestamp: Date.now()
+            }) + '\n');
+            break;
+
         case 'command':
             // 處理自定義命令
             socket.write(JSON.stringify({
