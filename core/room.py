@@ -2,9 +2,57 @@
 房間（Room）資料模型
 """
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from datetime import datetime
+from enum import Enum
 import uuid
+
+
+class RoomParameterType(str, Enum):
+    """房間參數類型枚舉"""
+    STRING = "string"
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    LONG = "long"
+    FLOAT = "float"
+    URI = "uri"
+    COMPONENT = "component"
+    STRING_ARRAY = "string_array"
+    INTEGER_ARRAY = "integer_array"
+    LONG_ARRAY = "long_array"
+    FLOAT_ARRAY = "float_array"
+
+
+class RoomParameter(BaseModel):
+    """房間參數模型"""
+    name: str = Field(..., min_length=1, description="參數名稱")
+    value_type: RoomParameterType = Field(..., description="參數類型")
+    is_global: bool = Field(default=True, description="是否為全域參數")
+    
+    # 全域值
+    global_value: Any = Field(None, description="全域參數值")
+    
+    # 用於非全域參數：設備 ID -> 值 的映射
+    device_values: Dict[str, Any] = Field(default_factory=dict, description="設備專屬值映射")
+    
+    @property
+    def adb_flag(self) -> str:
+        """獲取對應的 ADB 參數 flag"""
+        flags = {
+            RoomParameterType.STRING: "-es",        # ex: -es key "string value"
+            RoomParameterType.BOOLEAN: "-ez",       # ex: -ez key true
+            RoomParameterType.INTEGER: "-ei",       # ex: -ei key 123
+            RoomParameterType.LONG: "-el",          # ex: -el key 1234567890123
+            RoomParameterType.FLOAT: "-ef",         # ex: -ef key 1.23
+            RoomParameterType.URI: "-eu",           # ex: -eu key "content://..."
+            RoomParameterType.COMPONENT: "-ecn",    # ex: -ecn key component/name
+            RoomParameterType.STRING_ARRAY: "-esa", # ex: -esa key "v1,v2,v3"
+            RoomParameterType.INTEGER_ARRAY: "-eia",# ex: -eia key 1,2,3
+            RoomParameterType.LONG_ARRAY: "-ela",   # ex: -ela key 124,1245
+            RoomParameterType.FLOAT_ARRAY: "-efa",  # ex: -efa key 1.1,2.2
+        }
+        return flags.get(self.value_type, "-es")
+
 
 
 class Room(BaseModel):
@@ -18,6 +66,9 @@ class Room(BaseModel):
     # Socket Server 設定
     socket_ip: Optional[str] = Field(None, description="Socket Server IP 地址")
     socket_port: Optional[int] = Field(None, ge=1, le=65535, description="Socket Server 端口")
+    
+    # 房間參數
+    parameters: List[RoomParameter] = Field(default_factory=list, description="房間啟動參數列表")
     
     # 時間戳
     created_at: datetime = Field(default_factory=datetime.now)

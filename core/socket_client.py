@@ -14,16 +14,18 @@ logger = get_logger(__name__)
 class SocketClient:
     """Socket Client 類別，用於連接到房間的 Socket Server"""
     
-    def __init__(self, socket_ip: str, socket_port: int):
+    def __init__(self, socket_ip: str, socket_port: int, client_id: str = "Server"):
         """
         初始化 Socket Client
         
         Args:
             socket_ip: Socket Server IP 地址
             socket_port: Socket Server 端口
+            client_id: 客戶端 ID (預設為 Server)
         """
         self.socket_ip = socket_ip
         self.socket_port = socket_port
+        self.client_id = client_id
         self.socket: Optional[socket.socket] = None
         self.connected = False
     
@@ -47,6 +49,30 @@ class SocketClient:
             self.connected = True
             
             logger.info(f"✅ 已連接到 Socket Server: {self.socket_ip}:{self.socket_port}")
+            
+            # 接收並消耗歡迎消息
+            try:
+                self.socket.settimeout(2) # 短暫超時等待歡迎消息
+                welcome_data = b''
+                while True:
+                    chunk = self.socket.recv(4096)
+                    if not chunk:
+                        break
+                    welcome_data += chunk
+                    if b'\n' in welcome_data:
+                        break
+                
+                if welcome_data:
+                    logger.debug(f"收到歡迎消息: {welcome_data.decode('utf-8').strip()}")
+            except socket.timeout:
+                pass # 忽略讀取超時，可能是服務器沒發送或延遲
+            except Exception as e:
+                logger.warning(f"讀取歡迎消息失敗: {e}")
+            
+            # 如果有 client_id，自動登錄
+            if self.client_id:
+                return self.login(self.client_id)
+                
             return True, "連接成功"
         
         except socket.timeout:
@@ -62,6 +88,61 @@ class SocketClient:
             logger.error(error_msg)
             return False, error_msg
     
+    def login(self, device_id: str) -> Tuple[bool, str]:
+        """
+        登錄到 Socket Server
+        
+        Args:
+            device_id: 設備 ID
+            
+        Returns:
+            (成功, 訊息)
+        """
+        # 注意：我們使用更底層的 sendall 和 recv 來避免 self.send_command 中的遞歸連接問題
+        # 並且 send_command 設計為通用命令，這裡我們需要特定的處理流程
+        
+        try:
+            if not self.connected or not self.socket:
+                return False, "未連接"
+                
+            message = {
+                'type': 'login',
+                'device_id': device_id
+            }
+            
+            message_str = json.dumps(message) + '\n'
+            self.socket.sendall(message_str.encode('utf-8'))
+            logger.debug(f"發送登錄請求: {device_id}")
+            
+            # 接收登錄響應
+            self.socket.settimeout(5)
+            response_data = b''
+            while True:
+                chunk = self.socket.recv(4096)
+                if not chunk:
+                    break
+                response_data += chunk
+                if b'\n' in response_data:
+                    break
+            
+            if response_data:
+                response_str = response_data.decode('utf-8').strip()
+                if '\n' in response_str:
+                    response_str = response_str.split('\n')[0]
+                    
+                response = json.loads(response_str)
+                if response.get('success'):
+                    logger.info(f"✅ 登錄成功: {device_id}")
+                    return True, "登錄成功"
+                else:
+                    return False, response.get('message', '登錄失敗')
+            else:
+                return False, "未收到登錄響應"
+                
+        except Exception as e:
+            logger.error(f"登錄異常: {e}")
+            return False, f"登錄異常: {str(e)}"
+            
     def disconnect(self):
         """斷開連接"""
         try:

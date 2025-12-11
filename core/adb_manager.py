@@ -1,6 +1,7 @@
 """
 ADB 管理器
 """
+import asyncio
 import subprocess
 import re
 import platform
@@ -97,6 +98,125 @@ class ADBManager:
     ) -> Tuple[bool, str]:
         """執行 ADB shell 命令"""
         return self.execute_command(f"shell {command}", device, timeout)
+    
+    async def execute_command_async(
+        self,
+        command: str,
+        device: Optional[str] = None,
+        timeout: int = ADB_CONNECTION_TIMEOUT
+    ) -> Tuple[bool, str]:
+        """
+        異步執行 ADB 命令（非阻塞）
+        """
+        try:
+            cmd = ['adb']
+            if device:
+                cmd.extend(['-s', device])
+            cmd.extend(command.split())
+            
+            logger.debug(f"執行異步命令: {' '.join(cmd)}")
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                success = process.returncode == 0
+                output = stdout.decode().strip() if success else stderr.decode().strip()
+                
+                if success:
+                    logger.debug(f"異步命令成功: {output[:100]}")
+                else:
+                    logger.warning(f"異步命令失敗: {output}")
+                    
+                return success, output
+                
+            except asyncio.TimeoutError:
+                logger.error(f"異步命令超時: {command}")
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+                return False, "命令執行超時"
+                
+        except Exception as e:
+            logger.error(f"異步命令執行錯誤: {e}")
+            return False, str(e)
+
+    async def execute_shell_command_async(
+        self,
+        command: str,
+        device: Optional[str] = None,
+        timeout: int = ADB_CONNECTION_TIMEOUT
+    ) -> Tuple[bool, str]:
+        """異步執行 ADB shell 命令"""
+        return await self.execute_command_async(f"shell {command}", device, timeout)
+    
+    async def connect_async(self, ip: str, port: int = ADB_DEFAULT_PORT) -> Tuple[bool, str]:
+        """異步連接到設備"""
+        target = f"{ip}:{port}"
+        success, output = await self.execute_command_async(f"connect {target}")
+        
+        if success or "already connected" in output.lower():
+            logger.info(f"已連接到設備 (Async): {target}")
+            self.clear_devices_cache()
+            return True, output
+        
+        logger.error(f"連接失敗 (Async): {target} - {output}")
+        return False, output
+
+    async def get_device_status_async(self, device: str) -> Dict[str, Any]:
+        """異步獲取設備狀態"""
+        status = {
+            'battery': 0,
+            'temperature': 0.0,
+            'is_charging': False,
+            'is_screen_on': False,
+            'is_awake': True,
+            'uptime': 0,
+        }
+        
+        try:
+            command = """dumpsys battery | grep -E 'level:|temperature:|powered:' && echo '---POWER---' && dumpsys power | grep -E 'Display Power|mWakefulness=' && echo '---UPTIME---' && cat /proc/uptime | cut -d' ' -f1"""
+            
+            # 使用稍長的超時，因為 dumpsys 很慢
+            success, output = await self.execute_shell_command_async(command, device, timeout=15)
+            
+            if not success:
+                logger.warning(f"獲取設備狀態失敗 (Async): {device}")
+                return status
+            
+            lines = output.split('\n')
+            for line in lines:
+                if 'level:' in line:
+                    match = re.search(r'level:\s*(\d+)', line)
+                    if match: status['battery'] = int(match.group(1))
+                elif 'temperature:' in line:
+                    match = re.search(r'temperature:\s*(\d+)', line)
+                    if match: status['temperature'] = int(match.group(1)) / 10.0
+                elif 'powered:' in line:
+                    if 'true' in line.lower(): status['is_charging'] = True
+                elif 'Display Power' in line:
+                    if 'ON' in line: status['is_screen_on'] = True
+                elif 'mWakefulness=' in line:
+                    if 'Asleep' in line or 'Dozing' in line: status['is_awake'] = False
+                    else: status['is_awake'] = True
+                elif line.strip() and not line.startswith('---'):
+                    try:
+                        uptime = float(line.strip().split()[0])
+                        status['uptime'] = int(uptime)
+                    except (ValueError, IndexError):
+                        pass
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"解析設備狀態失敗 (Async): {device} - {e}")
+            return status
     
     def get_devices(self, use_cache: bool = True) -> List[Dict[str, str]]:
         """
@@ -1198,6 +1318,188 @@ class ADBManager:
             logger.error(f"❌ 安裝 APK 失敗: {e}")
             return False, f"安裝失敗: {str(e)}"
     
+    async def execute_wake_up_async(self, device: str, params: Dict[str, Any] = None) -> Tuple[bool, str]:
+        """異步執行喚醒"""
+        params = params or {}
+        verify = params.get('verify', True)
+        
+        success, output = await self.execute_shell_command_async("input keyevent KEYCODE_WAKEUP", device)
+        if not success: return False, f"喚醒命令執行失敗: {output}"
+        
+        if verify:
+            await asyncio.sleep(0.5)
+            success, power_state = await self.execute_shell_command_async("dumpsys power | grep 'Display Power: state='", device)
+            if success and 'ON' in power_state: return True, "設備已喚醒"
+            return True, "喚醒命令已發送（無法驗證狀態）"
+            
+        return True, "喚醒命令已發送"
+
+    async def execute_sleep_async(self, device: str, params: Dict[str, Any] = None) -> Tuple[bool, str]:
+        """異步執行休眠"""
+        params = params or {}
+        force = params.get('force', False)
+        verify = params.get('verify', True)
+        keycode = "KEYCODE_SLEEP" if force else "KEYCODE_POWER"
+        
+        success, output = await self.execute_shell_command_async(f"input keyevent {keycode}", device)
+        if not success: return False, f"休眠命令執行失敗: {output}"
+        
+        if verify:
+            await asyncio.sleep(0.5)
+            success, power_state = await self.execute_shell_command_async("dumpsys power | grep 'Display Power: state='", device)
+            if success and 'OFF' in power_state: return True, "設備已休眠"
+            return True, "休眠命令已發送（無法驗證狀態）"
+        
+        return True, "休眠命令已發送"
+
+    async def execute_launch_app_async(self, device: str, params: Dict[str, Any], room_info: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """異步執行啟動應用"""
+        package = params.get('package')
+        if not package: return False, "缺少 package 參數"
+        
+        activity = params.get('activity', '')
+        stop_existing = params.get('stop_existing', False)
+        wait = params.get('wait', True)
+        
+        if stop_existing:
+            await self.execute_shell_command_async(f"am force-stop {package}", device)
+        
+        if activity:
+            cmd = f"am start -n {package}/{activity}"
+            
+            # 加入 Socket Server 參數
+            if room_info and room_info.get('socket_ip') and room_info.get('socket_port'):
+                cmd += f" --es qqquest_server_ip \"{room_info['socket_ip']}\""
+                cmd += f" --ei qqquest_server_port {room_info['socket_port']}"
+            
+            # 加入自定義房間參數
+            if room_info and room_info.get('parameters'):
+                from core.room import RoomParameter
+                # 假設傳進來的是 RoomParameter 對象列表
+                parameters = room_info['parameters']
+                
+                # 獲取設備 ID (可能只是 IP:Port，需要解析或從 registry 查找?)
+                # 這裡 device 參數通常是序列號或 IP:Port
+                # 簡單起見，我們嘗試用 device ID 直接匹配
+                # 在 ADBManager 中我們只有 device string (serial/ip)
+                # 從 room.parameters.device_values 是用 device_id 存的
+                # 我們需要將 ADB device serial 映射到 device_id
+                # 這可能比較麻煩，因為 ADBManager 不依賴 DeviceRegistry
+                # 解決方案：在調用 execute_action_batch 時，已經是 iteration over devices
+                # 我們可以在那裡把 context 準備好。
+                # 但 execute_action_async 只接收 device string.
+                
+                # 這裡是一個潛在的問題：ADBManager 不知道 device_id。
+                # 權宜之計：我們依賴調用方 (ActionRegistry / UI) 把解析好的值傳進來？
+                # 不行，因為 execute_action 是通用的。
+                
+                # 改進方案：room_info 包含 'device_map' (serial -> device_id) ?
+                # 或者我們簡單點，假設 device string 就是 key (如果是 IP 連接的話通常也是唯一標識)
+                # 但 DeviceRegistry 的 device_id 是 UUID。
+                
+                # 讓我們看看 DeviceRegistry。device.device_id 是 UUID。
+                # 當我們在 UI 中調用 execute_action_batch 時，我們傳入的是 device.serial (connection_string)。
+                
+                # 所以我們需要在 room_info 中傳遞一個查找表 serial -> device_id。
+                # 或者，我們在此處傳遞的是 "resolved parameters"？
+                # 不，因為 global parameters 是通用的。
+                
+                # 讓我們在 UI 層組裝 room_info 時，把 `device_id_map` 放進去。
+                device_id = None
+                if room_info.get('device_id_map'):
+                     device_id = room_info['device_id_map'].get(device)
+                
+                # 自動注入設備識別參數 (device_id, device_ip)
+                if device_id:
+                    cmd += f" --es device_id \"{device_id}\""
+                
+                # 嘗試獲取 device_ip
+                device_ip = None
+                if room_info.get('device_params_map'): # 使用更通用的映射?
+                     d_info = room_info['device_params_map'].get(device)
+                     if d_info: device_ip = d_info.get('ip')
+                
+                if not device_ip:
+                    # 嘗試從 device serial 解析 IP (如果是網絡設備)
+                    if ':' in device and device.replace('.','').replace(':','').isdigit():
+                         device_ip = device.split(':')[0]
+                
+                if device_ip:
+                    cmd += f" --es device_ip \"{device_ip}\""
+                
+                for param in parameters:
+                    # 確保 param 是 RoomParameter 對象 (如果是 dict 則轉換)
+                    if isinstance(param, dict):
+                         # 簡單的反序列化，如果需要
+                         pass 
+                    
+                    flag = param.adb_flag
+                    value = None
+                    
+                    if param.is_global:
+                        value = param.global_value
+                    elif device_id and device_id in param.device_values:
+                        value = param.device_values[device_id]
+                    
+                    if value is not None:
+                        # 處理值格式
+                        if param.value_type == "string":
+                            cmd += f" {flag} {param.name} \"{value}\""
+                        else:
+                            # 對於 array 類型，需要逗號分隔
+                            if "array" in param.value_type and isinstance(value, list):
+                                value_str = ",".join(map(str, value))
+                                cmd += f" {flag} {param.name} {value_str}"
+                            else:
+                                cmd += f" {flag} {param.name} {value}"
+
+        else:
+            cmd = f"monkey -p {package} 1"
+        
+        if wait and activity: cmd += " -W"
+        
+        success, output = await self.execute_shell_command_async(cmd, device)
+        if not success: return False, f"啟動失敗: {output}"
+        
+        if "Error" in output or "error" in output.lower():
+            return False, f"啟動失敗: {output}"
+            
+        return True, f"應用 {package} 已啟動"
+
+    async def execute_action_async(self, device: str, action, room_info: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
+        """異步執行動作（通用方法）"""
+        from core.action import ActionType
+        try:
+            logger.info(f"⚡ 執行異步動作: {action.display_name} -> {device}")
+            
+            if action.action_type == ActionType.WAKE_UP:
+                return await self.execute_wake_up_async(device, action.params)
+            elif action.action_type == ActionType.SLEEP:
+                return await self.execute_sleep_async(device, action.params)
+            elif action.action_type == ActionType.LAUNCH_APP:
+                return await self.execute_launch_app_async(device, action.params, room_info)
+            elif action.action_type == ActionType.STOP_APP:
+                package = action.params.get('package')
+                method = action.params.get('method', 'force-stop')
+                cmd = f"am {'kill' if method == 'kill' else 'force-stop'} {package}"
+                success, output = await self.execute_shell_command_async(cmd, device)
+                return success, f"應用 {package} 已關閉" if success else f"關閉失敗: {output}"
+            elif action.action_type == ActionType.SEND_KEY:
+                keycode = action.params.get('keycode')
+                repeat = action.params.get('repeat', 1)
+                for _ in range(repeat):
+                    await self.execute_shell_command_async(f"input keyevent {keycode}", device)
+                    if repeat > 1: await asyncio.sleep(0.1)
+                return True, f"已發送按鍵: {keycode}"
+            
+            # 對於其他尚未實現 async 版本的動作，退回到同步執行（在 executor 中）
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self.execute_action, device, action, room_info)
+            
+        except Exception as e:
+            logger.error(f"❌ 執行異步動作失敗: {e}")
+            return False, f"執行失敗: {str(e)}"
+            
     def execute_action(self, device: str, action, room_info: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """
         執行動作（通用方法）

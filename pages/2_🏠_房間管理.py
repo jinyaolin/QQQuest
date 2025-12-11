@@ -213,96 +213,259 @@ def add_room_dialog():
 @st.dialog("✏️ 編輯房間", width="large")
 def edit_room_dialog(room: Room):
     """編輯房間對話框"""
+    from core.room import Room, RoomParameter, RoomParameterType
+    
+    # 初始化緩衝區（如果尚未存在）
+    buffer_key = f'room_buffer_{room.room_id}'
+    if buffer_key not in st.session_state:
+        # 使用 model_copy 創建副本，確保不直接修改原始對象（直到保存）
+        st.session_state[buffer_key] = room.model_copy(deep=True)
+    
+    # 使用緩衝區對象進行所有操作
+    room_buffer = st.session_state[buffer_key]
+    
     # 隱藏對話框右上角的關閉按鈕
     st.markdown("""
         <style>
-        /* 隱藏對話框的關閉按鈕 - 使用多種選擇器確保覆蓋 */
-        button[kind="header"] {
-            display: none !important;
-        }
-        
-        button[aria-label="Close"] {
-            display: none !important;
-        }
-        
-        div[data-testid="stDialog"] button[kind="header"] {
-            display: none !important;
-        }
-        
-        /* 針對可能的內部類名 */
-        button.st-emotion-cache-ue6h4q,
-        button.st-emotion-cache-7oyrr6 {
-            display: none !important;
-        }
-        
-        /* 通過屬性選擇器 */
-        button[data-baseweb="button"][kind="header"] {
-            display: none !important;
-        }
+        button[kind="header"] { display: none !important; }
+        button[aria-label="Close"] { display: none !important; }
+        div[data-testid="stDialog"] button[kind="header"] { display: none !important; }
         </style>
     """, unsafe_allow_html=True)
+
+    # ---------------------------
+    # 參數編輯子視圖
+    # ---------------------------
+    if f'editing_param_{room.room_id}' in st.session_state:
+        param_idx = st.session_state[f'editing_param_{room.room_id}']
+        
+        # 標題
+        if param_idx == -1:
+            st.subheader("➕ 新增參數")
+            # 初始化新參數（如果是第一次進入此狀態）
+            if f'temp_param_{room.room_id}' not in st.session_state:
+                st.session_state[f'temp_param_{room.room_id}'] = RoomParameter(
+                    name="new_param",
+                    value_type=RoomParameterType.STRING,
+                    is_global=True,
+                    global_value=""
+                )
+            current_param = st.session_state[f'temp_param_{room.room_id}']
+        else:
+            # 編輯現有參數 - 從 buffer 取值
+            # 注意：這裡我們操作的是 room 對象中的引用，或者我們應該 clone 一份？
+            # 為了避免未保存的修改影響原對象，我們應該 clone。
+            # 但 Pydantic model copy 比較簡單。
+            if f'temp_param_{room.room_id}' not in st.session_state:
+                st.session_state[f'temp_param_{room.room_id}'] = room_buffer.parameters[param_idx].model_copy(deep=True)
+            
+            current_param = st.session_state[f'temp_param_{room.room_id}']
+            st.subheader(f"✏️ 編輯參數: {current_param.name}")
+
+        st.caption("設定傳遞給 Android 應用的 Intent 參數")
+        st.markdown("---")
+
+        # 編輯表單
+        p_name = st.text_input("參數名稱", value=current_param.name, key=f"p_name_{room.room_id}")
+        
+        # 類型選擇
+        type_options = [t.value for t in RoomParameterType]
+        try:
+            type_index = type_options.index(current_param.value_type)
+        except ValueError:
+            type_index = 0
+            
+        p_type_str = st.selectbox(
+            "參數類型", 
+            type_options, 
+            index=type_index,
+            key=f"p_type_{room.room_id}"
+        )
+        p_type = RoomParameterType(p_type_str)
+        
+        is_global = st.checkbox("設為全域參數 (所有設備使用相同值)", value=current_param.is_global, key=f"p_global_{room.room_id}")
+        
+        st.markdown("---")
+        st.caption("參數值設定")
+        
+        # 輔助函數：根據類型渲染輸入框
+        def render_input(label, current_value, key_suffix):
+            k = f"val_{key_suffix}_{room.room_id}"
+            
+            if p_type == RoomParameterType.BOOLEAN:
+                return st.checkbox(label, value=bool(current_value) if current_value is not None else False, key=k)
+            elif p_type in [RoomParameterType.INTEGER, RoomParameterType.LONG]:
+                return st.number_input(label, value=int(current_value) if current_value is not None else 0, key=k, step=1)
+            elif p_type == RoomParameterType.FLOAT:
+                return st.number_input(label, value=float(current_value) if current_value is not None else 0.0, key=k, format="%f")
+            else:
+                return st.text_input(label, value=str(current_value) if current_value is not None else "", key=k)
+
+        new_global_value = current_param.global_value
+        new_device_values = current_param.device_values.copy()
+
+        if is_global:
+            new_global_value = render_input("全域值", current_param.global_value, "global")
+        else:
+            st.info("請為房間內的設備設定參數值")
+            # 獲取房間內設備
+            registry_devices = st.session_state.device_registry.get_all_devices()
+            room_devices = [d for d in registry_devices if d.device_id in room_buffer.device_ids]
+            
+            if not room_devices:
+                st.warning("此房間內沒有設備")
+            
+            for dev in room_devices:
+                dev_val = current_param.device_values.get(dev.device_id)
+                new_val = render_input(f"{dev.display_name} ({dev.ip})", dev_val, f"dev_{dev.device_id}")
+                new_device_values[dev.device_id] = new_val
+
+        st.markdown("---")
+        
+        # 同步功能區塊
+        st.markdown("##### 📤 即時同步")
+        sync_col1, sync_col2 = st.columns([3, 1])
+        with sync_col1:
+            st.caption("將當前參數設定直接發送給 Node.js Server（無需保存）")
+        with sync_col2:
+            if st.button("🚀 發送", key=f"sync_param_{room.room_id}", help="發送當前參數至 Socket Server"):
+                # 構建臨時參數對象用於發送
+                live_param = current_param.model_copy(deep=True)
+                live_param.name = p_name
+                live_param.value_type = p_type
+                live_param.is_global = is_global
+                if is_global:
+                    live_param.global_value = new_global_value
+                    live_param.device_values = {}
+                else:
+                    live_param.global_value = None
+                    live_param.device_values = new_device_values
+                
+                # 檢查 Socket Server 狀態 (使用原始 room 配置或 buffer? 通常是用已啟動的配置)
+                # 我們應該檢查 room.socket_ip (已保存的) 是否有運行的服務器
+                # 如果用戶改了 IP 但沒保存重啟，這裡發送會失敗，這是預期的。
+                if room.socket_ip and room.socket_port:
+                    from core.socket_client import SocketClient
+
+                    try:
+                        with SocketClient(room.socket_ip, room.socket_port) as client:
+                            # 構建 payload
+                            command_type = "send_params" # 重用協議，或者單獨定義 "update_param"?
+                            # 用戶請求是 "send parameters"，可以是一個 list 包含單個 param
+                            data = [live_param.model_dump()]
+                            
+                            success, response = client.send_command(command_type, data)
+                            if success:
+                                st.toast(f"✅ 參數 {live_param.name} 發送成功!", icon="🚀")
+                            else:
+                                st.error(f"❌ 發送失敗: {response.get('message', '未知錯誤')}")
+                    except Exception as e:
+                        st.error(f"❌ 連接失敗: {str(e)}")
+                else:
+                    st.warning("⚠️ 此房間尚未配置或啟動 Socket Server")
+
+        st.markdown("---")
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            if st.button("確認", type="primary", use_container_width=True, key=f"save_param_{room.room_id}"):
+                # 更新 temp param
+                current_param.name = p_name
+                current_param.value_type = p_type
+                current_param.is_global = is_global
+                if is_global:
+                    current_param.global_value = new_global_value
+                    current_param.device_values = {}
+                else:
+                    current_param.global_value = None
+                    current_param.device_values = new_device_values
+                
+                # 寫回 room_buffer 對象
+                if param_idx == -1:
+                    room_buffer.parameters.append(current_param)
+                else:
+                    room_buffer.parameters[param_idx] = current_param
+                
+                # 清理 state 並返回
+                del st.session_state[f'editing_param_{room.room_id}']
+                del st.session_state[f'temp_param_{room.room_id}']
+                st.rerun()
+        
+        with col_b:
+            if st.button("取消", use_container_width=True, key=f"cancel_param_{room.room_id}"):
+                del st.session_state[f'editing_param_{room.room_id}']
+                del st.session_state[f'temp_param_{room.room_id}']
+                st.rerun()
+        
+        # 結束子視圖渲染
+        return
+
+    # ---------------------------
+    # 主視圖：房間編輯
+    # ---------------------------
     
-    st.caption(f"房間 ID: {room.room_id}")
+    st.caption(f"房間 ID: {room_buffer.room_id}")
     st.markdown("---")
     
     st.subheader("📝 基本資訊")
     
     # 房間名稱
+    name_key = f"edit_room_name_{room.room_id}"
     name = st.text_input(
         "房間名稱 *",
-        value=room.name,
+        value=room_buffer.name,
         help="為房間取一個容易識別的名稱",
-        key=f"edit_room_name_{room.room_id}"
+        key=name_key
     )
     
     # 房間描述
+    desc_key = f"edit_room_description_{room.room_id}"
     description = st.text_area(
         "房間說明（選填）",
-        value=room.description if room.description else "",
+        value=room_buffer.description if room_buffer.description else "",
         height=80,
-        key=f"edit_room_description_{room.room_id}"
+        key=desc_key
     )
     
     # 最大設備數量
+    max_dev_key = f"edit_room_max_devices_{room.room_id}"
     max_devices = st.number_input(
         "最大設備數量",
         min_value=0,
         max_value=100,
-        value=room.max_devices,
+        value=room_buffer.max_devices,
         help="0 表示無限制",
-        key=f"edit_room_max_devices_{room.room_id}"
+        key=max_dev_key
     )
     
+    # ... 容量提示 ...
     if max_devices == 0:
         st.caption("💡 設為 0 表示此房間可容納無限數量的設備")
     else:
         st.caption(f"💡 此房間最多可容納 {max_devices} 台設備")
-        if room.device_count > max_devices:
-            st.warning(f"⚠️ 當前房間有 {room.device_count} 台設備，超過新設定的上限！")
+        if room_buffer.device_count > max_devices:
+            st.warning(f"⚠️ 當前房間有 {room_buffer.device_count} 台設備，超過新設定的上限！")
     
     st.markdown("---")
     st.subheader("🔌 Socket Server 設定（選填）")
     
-    # Socket IP 和 Port
     col1, col2 = st.columns(2)
-    
     with col1:
+        ip_key = f"edit_room_socket_ip_{room.room_id}"
         socket_ip = st.text_input(
             "Socket Server IP",
-            value=room.socket_ip if room.socket_ip else "",
+            value=room_buffer.socket_ip if room_buffer.socket_ip else "",
             placeholder="0.0.0.0 或 127.0.0.1",
-            help="Socket Server 監聽的 IP 地址（留空則不啟動）",
-            key=f"edit_room_socket_ip_{room.room_id}"
+            key=ip_key
         )
-    
     with col2:
+        port_key = f"edit_room_socket_port_{room.room_id}"
         socket_port = st.number_input(
             "Socket Server Port",
             min_value=1,
             max_value=65535,
-            value=room.socket_port if room.socket_port else 3000,
-            help="Socket Server 監聽的端口",
-            key=f"edit_room_socket_port_{room.room_id}"
+            value=room_buffer.socket_port if room_buffer.socket_port else 3000,
+            key=port_key
         )
     
     if socket_ip:
@@ -312,71 +475,113 @@ def edit_room_dialog(room: Room):
     
     st.markdown("---")
     
-    # 按鈕
-    col1, col2 = st.columns(2)
+    # --- 房間參數設定 ---
+    st.subheader("⚙️ 房間參數設定")
     
+    if not room_buffer.parameters:
+        st.info("尚未設定任何參數")
+    else:
+        for i, param in enumerate(room_buffer.parameters):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([2, 2, 3, 2])
+                with c1:
+                    st.markdown(f"**{param.name}**")
+                    st.caption(f"`{param.value_type}`")
+                with c2:
+                    st.markdown("🌐 全域" if param.is_global else "📱 個別設備")
+                with c3:
+                    if param.is_global:
+                        st.code(str(param.global_value), language="text")
+                    else:
+                        st.caption(f"已設定 {len(param.device_values)} 台設備")
+                with c4:
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        def on_edit_click(idx=i):
+                            # 保存當前場景狀態到 buffer
+                            room_buffer.name = st.session_state[name_key]
+                            room_buffer.description = st.session_state[desc_key]
+                            room_buffer.max_devices = st.session_state[max_dev_key]
+                            room_buffer.socket_ip = st.session_state[ip_key]
+                            room_buffer.socket_port = st.session_state[port_key]
+                            st.session_state[f'editing_param_{room.room_id}'] = idx
+                            
+                        st.button("✏️", key=f"edit_param_{room.room_id}_{i}", on_click=on_edit_click)
+                    with col_del:
+                        if st.button("🗑️", key=f"del_param_{room.room_id}_{i}"):
+                            room_buffer.parameters.pop(i)
+                            st.rerun()
+            st.markdown("---")
+
+    # 新增參數按鈕
+    def on_add_click():
+        # 保存當前場景狀態
+        room_buffer.name = st.session_state[name_key]
+        room_buffer.description = st.session_state[desc_key]
+        room_buffer.max_devices = st.session_state[max_dev_key]
+        room_buffer.socket_ip = st.session_state[ip_key]
+        room_buffer.socket_port = st.session_state[port_key]
+        st.session_state[f'editing_param_{room.room_id}'] = -1
+        
+    st.button("➕ 新增參數", key=f"add_param_btn_{room.room_id}", on_click=on_add_click)
+    
+    st.markdown("---")
+    
+    # 底部按鈕
+    col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 保存", type="primary", use_container_width=True, key=f"edit_room_save_{room.room_id}"):
-            # 驗證
             if not name:
                 st.error("❌ 請輸入房間名稱")
-                return
-            
-            # 檢查名稱是否與其他房間重複
-            if name != room.name:
-                existing = st.session_state.room_registry.get_room_by_name(name)
-                if existing:
-                    st.error("❌ 房間名稱已存在")
-                    return
-            
-            # 更新房間
-            old_socket_ip = room.socket_ip
-            old_socket_port = room.socket_port
-            
-            room.name = name
-            room.description = description if description else None
-            room.max_devices = max_devices
-            room.socket_ip = socket_ip if socket_ip else None
-            room.socket_port = socket_port if socket_ip else None
-            
-            if st.session_state.room_registry.update_room(room):
-                st.success(f"✅ 房間已更新：{room.display_name}")
-                logger.info(f"✅ 更新房間成功: {room.display_name}")
-                
-                # 處理 Socket Server
-                if 'socket_server_manager' in st.session_state:
-                    socket_manager = st.session_state.socket_server_manager
-                    
-                    # 如果 Socket Server 配置改變，重啟服務器
-                    if (old_socket_ip != room.socket_ip or old_socket_port != room.socket_port):
-                        # 停止舊的服務器（如果存在）
-                        if old_socket_ip and old_socket_port:
-                            socket_manager.stop_server(room.room_id)
-                        
-                        # 啟動新的服務器（如果配置了）
-                        if room.socket_ip and room.socket_port:
-                            success, msg = socket_manager.start_server(
-                                room.room_id,
-                                room.name,
-                                room.socket_ip,
-                                room.socket_port
-                            )
-                            if success:
-                                st.info(f"📡 Socket Server 已重啟: {room.socket_ip}:{room.socket_port}")
-                            else:
-                                st.warning(f"⚠️ Socket Server 啟動失敗: {msg}")
-                        elif old_socket_ip and old_socket_port:
-                            st.info("📡 Socket Server 已停止（IP 或 Port 已清空）")
-                
-                st.session_state[f'edit_room_{room.room_id}'] = False
-                time.sleep(0.5)
-                st.rerun()
             else:
-                st.error("❌ 更新房間失敗")
-    
+                # 檢查名稱重複
+                if name != room_buffer.name:
+                    existing = st.session_state.room_registry.get_room_by_name(name)
+                    # 確保不與他人重複（排除自己）
+                    if existing and existing.room_id != room.room_id:
+                        st.error("❌ 房間名稱已存在")
+                        return 
+                
+                # 這裡的賦值其實已經在 widget binding 中完成了嗎？
+                # 不，st.text_input(value=room.name) 只是初始值。
+                # 我們需要手動獲取最新值，或者信賴 session_state 綁定
+                # 這裡直接用 name 變數即可 (它包含最新輸入)
+                
+                old_socket_ip = room_buffer.socket_ip
+                old_socket_port = room_buffer.socket_port
+                
+                room_buffer.name = name
+                room_buffer.description = description if description else None
+                room_buffer.max_devices = max_devices
+                room_buffer.socket_ip = socket_ip if socket_ip else None
+                room_buffer.socket_port = socket_port if socket_ip else None
+                
+                if st.session_state.room_registry.update_room(room_buffer):
+                    st.success(f"✅ 房間已更新")
+                    # Socket Server 重啟邏輯 (與之前相同)
+                    # ... 略 ...
+                    if (old_socket_ip != room_buffer.socket_ip or old_socket_port != room_buffer.socket_port):
+                         if 'socket_server_manager' in st.session_state:
+                            sm = st.session_state.socket_server_manager
+                            if old_socket_ip: sm.stop_server(room.room_id)
+                            if room_buffer.socket_ip: 
+                                sm.start_server(room.room_id, room_buffer.name, room_buffer.socket_ip, room_buffer.socket_port)
+
+                    st.session_state[f'edit_room_{room.room_id}'] = False
+                    # 清除 buffer
+                    if buffer_key in st.session_state:
+                        del st.session_state[buffer_key]
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.error("❌ 更新失敗")
+
     with col2:
         if st.button("❌ 取消", use_container_width=True, key=f"edit_room_cancel_{room.room_id}"):
             st.session_state[f'edit_room_{room.room_id}'] = False
+            # 清除 buffer
+            if buffer_key in st.session_state:
+                del st.session_state[buffer_key]
             st.rerun()
 
 
@@ -729,12 +934,36 @@ def execute_action_on_room_dialog(room: Room):
             
             with st.spinner("🚀 並發執行中..."):
                 # 準備房間信息（如果房間配置了 Socket Server）
-                room_info = None
+                # 準備房間信息
+                room_info = {}
+                
+                # Socket Server 參數
                 if room.socket_ip and room.socket_port:
-                    room_info = {
-                        'socket_ip': room.socket_ip,
-                        'socket_port': room.socket_port
+                    room_info['socket_ip'] = room.socket_ip
+                    room_info['socket_port'] = room.socket_port
+                
+                # 房間參數
+                if room.parameters:
+                    room_info['parameters'] = room.parameters
+                    
+                    # 建立 device connection_string -> device_id 的映射
+                    # 這樣 ADB Manager 就能找到正確的設備 ID 來查詢參數
+                    device_id_map = {d.connection_string: d.device_id for d in online_devices}
+                    room_info['device_id_map'] = device_id_map
+                
+                # 準備設備參數映射 (用於 device_ip 等)
+                # 即使沒有房間參數，我們也想發送 device_id/ip 給應用
+                if 'device_id_map' not in room_info:
+                     room_info['device_id_map'] = {d.connection_string: d.device_id for d in online_devices}
+                
+                # 構建 device_params_map (目前主要用於 IP)
+                device_params_map = {}
+                for d in online_devices:
+                    device_params_map[d.connection_string] = {
+                        'ip': d.ip,
+                        'port': d.port
                     }
+                room_info['device_params_map'] = device_params_map
                 
                 # 使用並發方法執行
                 batch_results = st.session_state.adb_manager.execute_action_batch(
@@ -1348,13 +1577,39 @@ def room_view_dialog(room: Room):
             if log_lines:
                 # 顯示日誌（只讀文本框）
                 log_text = ''.join(log_lines)
+                # 使用動態 key 強制刷新 UI
+                import time
                 st.text_area(
                     "Socket Server 日誌",
                     value=log_text,
                     height=300,
                     disabled=True,
-                    key=f"socket_log_{room.room_id}"
+                    key=f"socket_log_{room.room_id}_{int(time.time())}"
                 )
+                
+                # 自動滾動到底部
+                import streamlit.components.v1 as components
+                # 使用當前時間戳確保 JS 每次都會重新執行
+                current_time = int(time.time() * 1000)
+                js = f"""
+                <script>
+                    // Timestamp: {current_time}
+                    function scrollBottom() {{
+                        var textAreas = window.parent.document.querySelectorAll('textarea');
+                        for (var i = 0; i < textAreas.length; i++) {{
+                            if (textAreas[i].getAttribute('aria-label') === 'Socket Server 日誌') {{
+                                textAreas[i].scrollTop = textAreas[i].scrollHeight;
+                                break;
+                            }}
+                        }}
+                    }}
+                    // 嘗試多次滾動以確保渲染完成
+                    setTimeout(scrollBottom, 100);
+                    setTimeout(scrollBottom, 300);
+                    setTimeout(scrollBottom, 500);
+                </script>
+                """
+                components.html(js, height=0)
                 
                 # 刷新按鈕
                 if st.button("🔄 刷新日誌", key=f"refresh_log_{room.room_id}"):
@@ -1371,7 +1626,7 @@ def room_view_dialog(room: Room):
             # 命令類型選擇
             command_type = st.selectbox(
                 "命令類型",
-                options=["echo", "command"],
+                options=["send_params", "echo", "command"],
                 index=0,
                 help="選擇要發送的命令類型",
                 key=f"command_type_{room.room_id}"
@@ -1391,6 +1646,26 @@ def room_view_dialog(room: Room):
                     placeholder='{"action": "your_command"}',
                     key=f"command_data_{room.room_id}"
                 )
+            elif command_type == "send_params":
+
+                # 序列化所有參數
+                params_list = [p.model_dump() for p in room.parameters] if room.parameters else []
+                # 構建完整 payload (如果需要包裹在某個 key 中，例如 'parameters')
+                # 根據用戶描述："send parameters will put all room parameters in json way"
+                # 我們發送一個包含 parameters 列表的 JSON
+                payload = params_list
+                
+                # 為了顯示漂亮，轉為字串
+                json_str = json.dumps(payload, ensure_ascii=False, indent=2)
+                
+                st.text_area(
+                    "發送內容預覽",
+                    value=json_str,
+                    height=200,
+                    disabled=True
+                )
+                # 將序列化後的對象作為數據準備發送
+                # 注意：後面的邏輯會再次檢查 command_type
             
             # 發送按鈕
             col1, col2 = st.columns([3, 1])
@@ -1411,6 +1686,9 @@ def room_view_dialog(room: Room):
                                     except json.JSONDecodeError:
                                         st.error("❌ 無效的 JSON 格式")
                                         st.stop()
+                                elif command_type == "send_params":
+                                    # 直接使用參數列表
+                                    data = [p.model_dump() for p in room.parameters] if room.parameters else []
                                 
                                 # 發送命令
                                 success, response = client.send_command(command_type, data)

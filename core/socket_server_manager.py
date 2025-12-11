@@ -86,6 +86,11 @@ class SocketServerManager:
                 logger.error(error_msg)
                 return False, error_msg
             
+            # 準備日誌文件
+            log_dir = self.server_script.parent.parent / "logs" / "socket_servers"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file_path = log_dir / f"room_{room_id}_{socket_port}.log"
+            
             # 啟動 Node.js 進程
             cmd = [
                 'node',
@@ -98,28 +103,68 @@ class SocketServerManager:
             
             logger.info(f"正在啟動 Socket Server: {room_name} ({socket_ip}:{socket_port})")
             logger.debug(f"執行命令: {' '.join(cmd)}")
+            logger.debug(f"日誌文件: {log_file_path}")
             
-            # 啟動進程（不等待完成）
+            # 打開日誌文件用於寫入
+            # 注意：這裡我們不使用 with 語句，因為進程需要一直持有文件句柄
+            # 文件句柄會在進程結束時由操作系統關閉，或者我們可以在 stop_server 中處理
+            # 但最簡單的方式是讓 subprocess 管理它
+            log_file = open(log_file_path, "a", encoding="utf-8")
+            
+            # 啟動進程（不等待完成），重定向輸出到日誌文件
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=log_file,
+                stderr=subprocess.STDOUT, # stderr 也重定向到 stdout (即日誌文件)
                 text=True,
                 cwd=self.server_script.parent.parent
             )
             
             # 等待一下，檢查是否成功啟動
             import time
-            time.sleep(0.5)
+            time.sleep(1.0) # 稍微增加等待時間確保啟動
             
             if process.poll() is not None:
                 # 進程已結束（可能啟動失敗）
-                stdout, stderr = process.communicate()
-                error_msg = f"Socket Server 啟動失敗: {stderr or stdout}"
+                # 由於輸出重定向到了文件，我們需要讀取文件來獲取錯誤信息
+                log_file.close() # 關閉文件句柄以便讀取
+                
+                error_content = ""
+                if log_file_path.exists():
+                    try:
+                        with open(log_file_path, "r", encoding="utf-8") as f:
+                            lines = f.readlines()
+                            error_content = "".join(lines[-10:]) # 取最後 10 行
+                    except Exception:
+                        error_content = "無法讀取日誌文件"
+                
+                error_msg = f"Socket Server 啟動失敗: {error_content}"
                 logger.error(error_msg)
                 return False, error_msg
             
             # 保存進程和資訊
+            # 注意：我們保存 log_file 對象引用，以便在停止時關閉它（雖然 Popen 默認會處理，但顯式關閉更好）
+            # 不過 subprocess 文檔說：If you wish to capture stdin, stdout, or stderr... you need to pass PIPE...
+            # If you pass a file object... Popen will handle closing it? 
+            # 實際上，Popen 不會自動關閉傳入的文件對象，我們應該在父進程中關閉它，但在 Popen 啟動後關閉它可能會導致子進程寫入失敗？
+            # 不，對於文件對象，一旦傳遞給 Popen，子進程繼承了文件描述符。父進程可以（也應該）關閉它，除非父進程也要寫入。
+            # 讓我們保持簡單，不保存 log_file 對象，讓 GC 處理或依賴操作系統。
+            # 更安全的做法是：在父進程中，只要 process 啟動了，我們就可以關閉我們端的 file handle，因為子進程已經有了自己的 handle。
+            # 但是為了安全起見（有些平台差異），我們暫時保持打開，或者存入 server_info 以便後續清理。
+            
+            # 決定：讓它保持打開，反正 Python GC 會在引用計數為 0 時關閉它。
+            # 由於我們沒有將 log_file 存入 self，它在這個 scope 結束時應該會被釋放。
+            # 但等等，如果我們關閉了它，子進程還能寫嗎？
+            # 在 POSIX 上，子進程繼承了 FD，父進程關閉 python file object 應該沒問題。
+            # 在 Windows 上可能不同。
+            # 一般最佳實踐：
+            # log_fp = open(...)
+            # Popen(..., stdout=log_fp, ...)
+            # log_fp.close() # 在父進程中關閉
+            
+            # 我們嘗試在成功啟動後關閉它
+            # log_file.close() 
+            
             self.servers[room_id] = process
             self.server_info[room_id] = {
                 'ip': socket_ip,

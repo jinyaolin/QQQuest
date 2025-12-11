@@ -743,20 +743,94 @@ def render_device_card(device: Device):
                 st.write(device.notes)
 
 
+
 def main():
     """主函數"""
+    import asyncio  # Import locally to avoid potential top-level await issues if any
+    
     st.title("📱 設備管理")
     
     # 頂部操作欄
-    col1, col2 = st.columns([5, 1])
+    col1, col2, col3 = st.columns([1, 1, 2])
     
     with col1:
-        st.caption("💡 提示：點擊「新增設備」透過 WiFi ADB 連接 Quest 設備")
-    
-    with col2:
-        if st.button("➕ 新增設備", use_container_width=True):
+        if st.button("➕ 新增設備", type="primary", use_container_width=True):
             st.session_state.show_add_device_dialog = True
+            
+    with col2:
+        if st.button("🔄 刷新狀態", use_container_width=True):
             st.rerun()
+
+    # Async Scan Button
+    if st.button("⚡ 極速掃描 (Async)", use_container_width=True):
+        devices = st.session_state.device_registry.get_all_devices()
+        if not devices:
+            st.warning("沒有設備可掃描")
+        else:
+            status_placeholder = st.empty()
+            with status_placeholder.container():
+                st.info("🚀 正在並行掃描所有設備...")
+                progress_bar = st.progress(0)
+                
+                # Table for results
+                result_data = []
+                
+                async def scan_single(device):
+                    start_t = time.time()
+                    if not device.ip:
+                        return device.display_name, "Skipped (No IP)", 0.0, False
+                        
+                    # 1. Ping
+                    ping_time = await asyncio.to_thread(st.session_state.adb_manager.ping_device, device.ip, 1) # simple ping
+                    
+                    # 2. ADB Connect (if needed) or Status Check
+                    status_dict = await st.session_state.adb_manager.get_device_status_async(device.connection_string)
+                    
+                    end_t = time.time()
+                    duration = end_t - start_t
+                    
+                    # Update device object
+                    if status_dict['battery'] > 0:
+                        device.battery = status_dict['battery']
+                        device.temperature = status_dict['temperature']
+                        device.is_charging = status_dict['is_charging']
+                        device.status = DeviceStatus.ONLINE
+                        st.session_state.device_registry.save_device(device)
+                        return device.display_name, "Updated", duration, True
+                    elif ping_time is not None:
+                        # Ping success but ADB failed to return status implies connected to network but not fully ADB ready or unauthorized
+                         return device.display_name, f"Ping: {ping_time*1000:.0f}ms (ADB Fail)", duration, False
+                    else:
+                         return device.display_name, "Offline", duration, False
+
+                async def run_scan():
+                    tasks = [scan_single(d) for d in devices]
+                    results = []
+                    for i, future in enumerate(asyncio.as_completed(tasks)):
+                        res = await future
+                        results.append(res)
+                        progress_bar.progress((i + 1) / len(devices))
+                    return results
+
+                # Run Event Loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                results = loop.run_until_complete(run_scan())
+                loop.close()
+                
+                # Show Result Table
+                import pandas as pd
+                df = pd.DataFrame(results, columns=["Device", "Status", "Time (s)", "Success"])
+                st.dataframe(df, use_container_width=True)
+                
+                time.sleep(1) # Let user see the table briefly
+                st.success("掃描完成！")
+                time.sleep(1)
+                st.rerun()
+
+
+
+
     
     # 對話框：手動新增設備
     if st.session_state.get('show_add_device_dialog', False):

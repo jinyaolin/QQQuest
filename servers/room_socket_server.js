@@ -34,16 +34,31 @@ function log(message) {
     const timestamp = new Date().toISOString();
     const logMessage = `[${timestamp}] ${message}`;
     console.log(logMessage);
-    
-    // 寫入日誌文件
-    fs.appendFileSync(logFile, logMessage + '\n');
+
+    // 寫入日誌文件 -- 已由 Python 管理器重定向 stdout 到日誌文件，不需要手動寫入
+    // fs.appendFileSync(logFile, logMessage + '\n');
 }
+
+// 保存所有連接的客戶端
+const clients = new Map();
 
 // 創建 TCP Server
 const server = net.createServer((socket) => {
     const clientAddress = `${socket.remoteAddress}:${socket.remotePort}`;
     log(`✅ 新客戶端連接: ${clientAddress} (房間: ${roomName})`);
-    
+
+    // 初始化客戶端信息
+    const clientInfo = {
+        socket: socket,
+        address: clientAddress,
+        device_id: null, // 尚未登錄
+        is_server: false,
+        connected_at: new Date()
+    };
+
+    // 添加到客戶端列表 (暫時使用 address 作為 key，登錄後可關聯 device_id)
+    clients.set(socket, clientInfo);
+
     // 發送歡迎消息
     socket.write(JSON.stringify({
         type: 'welcome',
@@ -51,24 +66,24 @@ const server = net.createServer((socket) => {
         room_name: roomName,
         message: `歡迎連接到房間 ${roomName} 的 Socket Server`
     }) + '\n');
-    
+
     // 處理接收到的數據
     let buffer = '';
     socket.on('data', (data) => {
         buffer += data.toString();
-        
+
         // 處理完整的 JSON 消息（以換行符分隔）
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // 保留最後一個不完整的行
-        
+
         lines.forEach(line => {
             if (line.trim()) {
                 try {
                     const message = JSON.parse(line);
-                    log(`📨 收到消息 (${clientAddress}): ${JSON.stringify(message)}`);
-                    
+                    log(`📨 收到消息 (${clientInfo.device_id || clientAddress}): ${JSON.stringify(message)}`);
+
                     // 處理消息
-                    handleMessage(socket, message, clientAddress);
+                    handleMessage(socket, message, clientInfo);
                 } catch (e) {
                     log(`⚠️ 解析消息失敗 (${clientAddress}): ${e.message}`);
                     socket.write(JSON.stringify({
@@ -79,12 +94,13 @@ const server = net.createServer((socket) => {
             }
         });
     });
-    
+
     // 處理連接關閉
     socket.on('close', () => {
-        log(`❌ 客戶端斷開連接: ${clientAddress}`);
+        log(`❌ 客戶端斷開連接: ${clientInfo.device_id || clientAddress}`);
+        clients.delete(socket);
     });
-    
+
     // 處理錯誤
     socket.on('error', (err) => {
         log(`❌ Socket 錯誤 (${clientAddress}): ${err.message}`);
@@ -92,10 +108,31 @@ const server = net.createServer((socket) => {
 });
 
 // 處理消息
-function handleMessage(socket, message, clientAddress) {
-    const { type, data } = message;
-    
+function handleMessage(socket, message, clientInfo) {
+    const { type, data, device_id } = message;
+
     switch (type) {
+        case 'login':
+            // 登錄指令
+            // 格式: { type: 'login', device_id: '...' }
+            if (device_id) {
+                clientInfo.device_id = device_id;
+                clientInfo.is_server = (device_id === 'Server'); // 簡單判定
+                log(`🔐 客戶端登錄: ${device_id} (${clientInfo.address})`);
+
+                socket.write(JSON.stringify({
+                    type: 'login_response',
+                    success: true,
+                    message: `登錄成功: ${device_id}`
+                }) + '\n');
+            } else {
+                socket.write(JSON.stringify({
+                    type: 'error',
+                    message: '登錄失敗: 缺少 device_id'
+                }) + '\n');
+            }
+            break;
+
         case 'ping':
             // 心跳檢測
             socket.write(JSON.stringify({
@@ -103,7 +140,7 @@ function handleMessage(socket, message, clientAddress) {
                 timestamp: Date.now()
             }) + '\n');
             break;
-            
+
         case 'echo':
             // 回顯消息
             socket.write(JSON.stringify({
@@ -112,10 +149,9 @@ function handleMessage(socket, message, clientAddress) {
                 timestamp: Date.now()
             }) + '\n');
             break;
-            
+
         case 'command':
             // 處理自定義命令
-            log(`📨 收到自定義命令 (${clientAddress}): ${JSON.stringify(data)}`);
             socket.write(JSON.stringify({
                 type: 'command_response',
                 data: data,
@@ -123,12 +159,36 @@ function handleMessage(socket, message, clientAddress) {
                 timestamp: Date.now()
             }) + '\n');
             break;
-            
-        case 'broadcast':
-            // 廣播消息給所有連接的客戶端
-            broadcast(message, socket);
+
+        case 'send_params':
+            // 廣播參數給所有機器 (包含 Server)
+            // 格式: { type: 'send_params', data: [...] }
+            log(`📢 廣播參數 (來自 ${clientInfo.device_id || clientInfo.address})`);
+
+            // 構建廣播消息
+            const broadcastMsg = {
+                type: 'params_update', // 修改為 params_update 讓客戶端識別
+                from: clientInfo.device_id,
+                data: data,
+                timestamp: Date.now()
+            };
+
+            // 廣播給所有連接的客戶端 (包括發送者自己，因為 User 說 "server itself will also receive")
+            broadcast(broadcastMsg);
+
+            // 回復發送者確認
+            socket.write(JSON.stringify({
+                type: 'command_response',
+                message: '參數已廣播',
+                timestamp: Date.now()
+            }) + '\n');
             break;
-            
+
+        case 'broadcast':
+            // 通用廣播消息
+            broadcast(message, socket); // 排除發送者? 這裡之前的邏輯是不明確的
+            break;
+
         default:
             log(`⚠️ 未知消息類型: ${type}`);
             socket.write(JSON.stringify({
@@ -139,21 +199,19 @@ function handleMessage(socket, message, clientAddress) {
 }
 
 // 廣播消息給所有客戶端
-function broadcast(message, senderSocket) {
-    server.getConnections((err, count) => {
-        if (err) {
-            log(`❌ 獲取連接數失敗: ${err.message}`);
-            return;
+function broadcast(message, excludeSocket = null) {
+    let count = 0;
+    for (const [socket, info] of clients.entries()) {
+        if (socket !== excludeSocket && socket.writable) {
+            try {
+                socket.write(JSON.stringify(message) + '\n');
+                count++;
+            } catch (e) {
+                log(`❌ 發送廣播失敗 (${info.device_id || info.address}): ${e.message}`);
+            }
         }
-        
-        log(`📢 廣播消息給 ${count} 個客戶端`);
-        
-        // 遍歷所有連接並發送消息
-        server.getConnections((err, count) => {
-            // 這裡需要手動追蹤連接，因為 net.Server 沒有直接的方法獲取所有 socket
-            // 實際應用中應該維護一個連接列表
-        });
-    });
+    }
+    log(`📢 已廣播消息給 ${count} 個客戶端`);
 }
 
 // 處理服務器錯誤
@@ -171,7 +229,7 @@ server.listen(socketPort, socketIp, () => {
     log(`📡 監聽地址: ${socketIp}:${socketPort}`);
     log(`🏠 房間: ${roomName} (ID: ${roomId})`);
     log(`📝 日誌文件: ${logFile}`);
-    
+
     // 發送啟動成功信號（通過 stdout）
     process.stdout.write(JSON.stringify({
         status: 'started',
