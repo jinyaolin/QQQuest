@@ -302,7 +302,8 @@ def edit_room_dialog(room: Room):
                 return st.text_input(label, value=str(current_value) if current_value is not None else "", key=k)
 
         new_global_value = current_param.global_value
-        new_device_values = current_param.device_values.copy()
+        import copy
+        new_device_values = copy.deepcopy(current_param.device_values)
 
         if is_global:
             new_global_value = render_input("全域值", current_param.global_value, "global")
@@ -317,8 +318,29 @@ def edit_room_dialog(room: Room):
             
             for dev in room_devices:
                 dev_val = current_param.device_values.get(dev.device_id)
-                new_val = render_input(f"{dev.display_name} ({dev.ip})", dev_val, f"dev_{dev.device_id}")
-                new_device_values[dev.device_id] = new_val
+                # 若先前已存為 dict，拆出 value 與 rotation_value
+                if isinstance(dev_val, dict):
+                    existing_val = dev_val.get("value")
+                    existing_rot = dev_val.get("rotation_value")
+                else:
+                    existing_val = dev_val
+                    existing_rot = None
+                
+                new_val = render_input(f"{dev.display_name} ({dev.ip})", existing_val, f"dev_{dev.device_id}")
+                # rotation 以文字輸入，讓用戶自由填 float 列表等格式
+                rot_key = f"rot_{dev.device_id}_{room.room_id}"
+                new_rot = st.text_input(
+                    f"{dev.display_name} 旋轉(rotation) (Euler 列表)",
+                    value=str(existing_rot) if existing_rot is not None else "",
+                    key=rot_key,
+                    placeholder="[0,30,0]"
+                )
+                
+                # 保存成 dict，to_transport 會識別
+                new_device_values[dev.device_id] = {
+                    "value": new_val,
+                    "rotation_value": new_rot if new_rot != "" else None
+                }
 
         st.markdown("---")
         
@@ -352,7 +374,7 @@ def edit_room_dialog(room: Room):
                             # 構建 payload
                             command_type = "send_params" # 重用協議，或者單獨定義 "update_param"?
                             # 用戶請求是 "send parameters"，可以是一個 list 包含單個 param
-                            data = [live_param.model_dump()]
+                            data = [live_param.to_transport()]
                             
                             success, response = client.send_command(command_type, data)
                             if success:
@@ -1649,7 +1671,7 @@ def room_view_dialog(room: Room):
             elif command_type == "send_params":
 
                 # 序列化所有參數
-                params_list = [p.model_dump() for p in room.parameters] if room.parameters else []
+                params_list = [p.to_transport() for p in room.parameters] if room.parameters else []
                 # 構建完整 payload (如果需要包裹在某個 key 中，例如 'parameters')
                 # 根據用戶描述："send parameters will put all room parameters in json way"
                 # 我們發送一個包含 parameters 列表的 JSON
@@ -1688,7 +1710,7 @@ def room_view_dialog(room: Room):
                                         st.stop()
                                 elif command_type == "send_params":
                                     # 直接使用參數列表
-                                    data = [p.model_dump() for p in room.parameters] if room.parameters else []
+                                    data = [p.to_transport() for p in room.parameters] if room.parameters else []
                                 
                                 # 發送命令
                                 success, response = client.send_command(command_type, data)
@@ -2081,5 +2103,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
