@@ -54,6 +54,31 @@ class RoomParameter(BaseModel):
         return flags.get(self.value_type, "-es")
 
 
+    def to_transport(self) -> Dict[str, Any]:
+        """
+        序列化參數用於網路傳輸：device_values 由 dict 轉為 list[{device_id,value}]
+        """
+        data = self.model_dump()
+        if self.device_values:
+            device_list = []
+            for dev_id, value in self.device_values.items():
+                # 允許 value 已經是 dict，並帶有 rotation_value
+                if isinstance(value, dict):
+                    v = value.get('value')
+                    rot = value.get('rotation_value')
+                else:
+                    v = value
+                    rot = None
+                device_list.append({
+                    'device_id': dev_id,
+                    'value': v,
+                    'rotation_value': rot
+                })
+            data['device_values'] = device_list
+        else:
+            data['device_values'] = []
+        return data
+
 
 class Room(BaseModel):
     """房間模型"""
@@ -168,6 +193,4 @@ class Room(BaseModel):
         if 'updated_at' in data and isinstance(data['updated_at'], str):
             data['updated_at'] = datetime.fromisoformat(data['updated_at'])
         return cls(**data)
-
-
 

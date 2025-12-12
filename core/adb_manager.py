@@ -1440,6 +1440,9 @@ class ADBManager:
                         value = param.global_value
                     elif device_id and device_id in param.device_values:
                         value = param.device_values[device_id]
+                        # 若值是 dict，取出主要 value 欄位，忽略 rotation_value
+                        if isinstance(value, dict):
+                            value = value.get('value')
                     
                     if value is not None:
                         # 處理值格式
@@ -1915,4 +1918,3 @@ class ADBManager:
             return DeviceStatus.ADB_NOT_ENABLED, f"無法連接：WiFi ADB 未開啟（Ping: {ping_time:.1f}ms）", ping_time
         else:
             return DeviceStatus.NOT_CONNECTED, f"連接失敗：{output}", ping_time
-
