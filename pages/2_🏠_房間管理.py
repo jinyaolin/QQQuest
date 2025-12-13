@@ -159,6 +159,30 @@ def add_room_dialog():
         st.caption(f"💡 此房間最多可容納 {max_devices} 台設備")
     
     st.markdown("---")
+    st.subheader("🔌 Socket Server 設定（選填）")
+    
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        socket_ip = st.text_input(
+            "Socket Server IP",
+            placeholder="0.0.0.0 或 127.0.0.1",
+            key="new_room_socket_ip"
+        )
+    with col_s2:
+        socket_port = st.number_input(
+            "Socket Server Port",
+            min_value=1,
+            max_value=65535,
+            value=3000,
+            key="new_room_socket_port"
+        )
+    
+    if socket_ip:
+        st.info(f"📡 Socket Server 將在啟動時監聽 {socket_ip}:{socket_port}")
+    else:
+        st.caption("💡 留空 IP 地址則不會啟動 Socket Server")
+    
+    st.markdown("---")
     
     # 按鈕
     col1, col2 = st.columns(2)
