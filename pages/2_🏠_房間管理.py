@@ -2027,6 +2027,10 @@ def main():
     
     with col2:
         if st.button("➕ 新增房間", use_container_width=True, type="primary"):
+            for key in ['new_room_name', 'new_room_description', 'new_room_max_devices',
+                       'new_room_socket_ip', 'new_room_socket_port']:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.session_state.show_add_room_dialog = True
             st.rerun()
     
